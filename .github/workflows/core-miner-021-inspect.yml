@@ -1,0 +1,41 @@
+name: Core Miner 0.2.1 source and SDK inspection
+
+on:
+  push:
+    branches: [work/core-miner-0.2.1-beta]
+    paths: [.github/workflows/core-miner-021-inspect.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Export committed source and inspect published SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p inspection
+          git rev-parse HEAD > inspection/source-commit.txt
+          git archive --format=zip --output=inspection/source.zip HEAD
+          npm view @teamgosh/bee-sdk dist-tags --json | tee inspection/sdk-dist-tags.json
+          npm view @teamgosh/bee-sdk@latest version dist --json | tee inspection/sdk-latest.json
+          npm pack @teamgosh/bee-sdk@latest --pack-destination inspection --json > inspection/sdk-pack.json
+          npm pack @teamgosh/bee-sdk@4.0.0 --pack-destination inspection --json > inspection/sdk-baseline-pack.json
+          sha256sum inspection/* > inspection/SHA256SUMS.txt
+      - name: Upload source and package evidence (no wallet data)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-miner-021-source-sdk-inspection
+          path: inspection/
+          retention-days: 7
+          if-no-files-found: error
