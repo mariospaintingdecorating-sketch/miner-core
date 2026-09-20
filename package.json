@@ -4,12 +4,8 @@
   "version": "0.2.1-beta",
   "private": true,
   "description": "Core Miner desktop mining operator application",
-  "author": {
-    "name": "MSII"
-  },
-  "engines": {
-    "node": "^20.19.0 || >=22.12.0"
-  },
+  "author": { "name": "MSII" },
+  "engines": { "node": "^20.19.0 || >=22.12.0" },
   "type": "module",
   "main": "dist-electron/main.js",
   "scripts": {
@@ -20,8 +16,9 @@
     "build:renderer": "vite build",
     "build:electron": "tsc -p tsconfig.electron.json && npm run build:bee-utility",
     "build:bee-utility": "vite build --config vite.bee-utility.config.ts",
-    "pack:win": "npm run build && electron-builder --win dir --x64",
-    "dist:win": "npm run build && electron-builder --win nsis --x64",
+    "pack:win": "npm run build && electron-builder --win dir --x64 --publish never",
+    "dist:win": "npm run build && electron-builder --win nsis --x64 --publish never && node build/verify-package.cjs",
+    "test:packaged:win": "node build/smoke-windows.cjs",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.electron.json --noEmit && tsc -p tsconfig.infrastructure-tests.json --noEmit",
     "test": "vitest run",
     "preview": "vite preview",
@@ -55,37 +52,15 @@
     "productName": "Core Miner",
     "artifactName": "Core Miner 0.2.1 beta setup.${ext}",
     "asar": true,
-    "asarUnpack": [
-      "node_modules/@eversdk/lib-node/**/*.node"
-    ],
-    "directories": {
-      "output": "release"
-    },
+    "asarUnpack": ["node_modules/@eversdk/lib-node/**/*.node"],
+    "directories": { "output": "release" },
     "extraResources": [
-      {
-        "from": "assets/logo/msii-miner-core-approved.png",
-        "to": "logo/msii-miner-core-approved.png"
-      },
-      {
-        "from": "assets/logo/msii-miner-core-approved.ico",
-        "to": "logo/msii-miner-core-approved.ico"
-      }
+      { "from": "assets/logo/msii-miner-core-approved.png", "to": "logo/msii-miner-core-approved.png" },
+      { "from": "assets/logo/msii-miner-core-approved.ico", "to": "logo/msii-miner-core-approved.ico" }
     ],
-    "files": [
-      "dist/**/*",
-      "dist-electron/**/*",
-      "!dist-electron/**/*.test.js",
-      "package.json"
-    ],
+    "files": ["dist/**/*", "dist-electron/**/*", "!dist-electron/**/*.test.js", "package.json"],
     "win": {
-      "target": [
-        {
-          "target": "nsis",
-          "arch": [
-            "x64"
-          ]
-        }
-      ],
+      "target": [{"target":"nsis","arch":["x64"]}],
       "icon": "assets/logo/msii-miner-core-approved.ico",
       "legalTrademarks": "MSII"
     },
