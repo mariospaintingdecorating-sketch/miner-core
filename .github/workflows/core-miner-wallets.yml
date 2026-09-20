@@ -1,0 +1,133 @@
+name: Core Miner 0.2.2 wallet repair
+on:
+  push:
+    branches: ["fix/core-miner-0.2.2-wallets"]
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: core-miner-022-wallets
+  cancel-in-progress: false
+jobs:
+  windows-wallet-repair:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Verify and commit reviewed wallet changes on isolated branch
+        shell: python
+        run: |
+          import os, pathlib, json, base64, zlib, hashlib, subprocess
+          assert os.environ['GITHUB_REF_NAME'] == 'fix/core-miner-0.2.2-wallets'
+          root=pathlib.Path('.'); out=pathlib.Path(os.environ['RUNNER_TEMP'])
+          version=json.loads((root/'package.json').read_text())['version']
+          if version == '0.2.1-beta':
+              parts=[root/f'build/wallets-022-transfer-{i}.b64' for i in (1,2,3)]
+              encoded=''.join(p.read_text().strip() for p in parts)
+              (out/'transfer-received.b64').write_text(encoded)
+              # Normalize two documented transfer transcription differences, then
+              # require the original complete source digest before any file write.
+              encoded=encoded.replace('lsuZZBD','lsuZBD').replace('dJ0lWe03VDK3','dJ0l903VDK3')
+              raw=zlib.decompress(base64.b64decode(encoded,validate=True))
+              assert hashlib.sha256(raw).hexdigest() == 'c7e4df25fe79e79602995d4818ce8a983eb58d54d9893ace62ac517033e56c37', 'Source transfer digest mismatch'
+              document=json.loads(raw)
+              assert document['format']==1
+              subprocess.run(['git','merge-base','--is-ancestor',document['base'],'HEAD'],check=True)
+              updates=[]
+              for change in document['changes']:
+                  p=pathlib.Path(change['path'])
+                  assert not p.is_absolute() and '..' not in p.parts and '.git' not in p.parts
+                  previous=p.read_text(encoding='utf-8').replace('\r\n','\n') if p.exists() else None
+                  actual=hashlib.sha256(previous.encode()).hexdigest() if previous is not None else None
+                  assert actual==change['before'], 'Unexpected base content: '+str(p)
+                  lines=(previous or '').splitlines(keepends=True)
+                  for edit in reversed(change['edits']):
+                      lines[edit['start']:edit['start']+edit['delete']]=edit['insert']
+                  result=''.join(lines)
+                  assert hashlib.sha256(result.encode()).hexdigest()==change['after'], 'Result digest mismatch: '+str(p)
+                  updates.append((p,result))
+              for p,result in updates:
+                  p.parent.mkdir(parents=True,exist_ok=True)
+                  p.write_bytes(result.encode('utf-8'))
+              for p in parts: p.unlink()
+              subprocess.run(['git','config','user.name','github-actions[bot]'],check=True)
+              subprocess.run(['git','config','user.email','41898282+github-actions[bot]@users.noreply.github.com'],check=True)
+              subprocess.run(['git','add','--']+[str(p) for p,_ in updates]+[str(p) for p in parts],check=True)
+              subprocess.run(['git','commit','-m','fix: direct mining-key QR, bounded verification and simpler wallet setup [skip ci]'],check=True)
+              subprocess.run(['git','push','origin','HEAD:refs/heads/fix/core-miner-0.2.2-wallets'],check=True)
+              (out/'source-transfer-verification.json').write_text(json.dumps({'passed':True,'files':len(updates),'sha256':hashlib.sha256(raw).hexdigest()},indent=2))
+          else:
+              assert version=='0.2.2-beta','Unexpected version'
+          (out/'core-miner-source-commit.txt').write_text(subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip())
+      - name: Install locked dependencies with unchanged mining module
+        run: |
+          $hash = (Get-FileHash 'vendor/msii-bee-miner-5.1.1-core.1.tgz' -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -ne 'ce83fc38df7baf8a07a0dd9a37d88d4c3b588643996c541446a873f3e3746e5e') { throw 'Mining module hash mismatch' }
+          npm ci
+          if ($LASTEXITCODE -ne 0) { throw 'Dependency installation failed' }
+      - name: Ensure native read library is packaged
+        run: |
+          $native = 'node_modules/@eversdk/lib-node/eversdk.node'
+          if (-not (Test-Path $native)) {
+            Push-Location 'node_modules/@eversdk/lib-node'
+            try { node install.js; if ($LASTEXITCODE -ne 0) { throw 'Native library installation failed' } } finally { Pop-Location }
+          }
+          if (-not (Test-Path $native)) { throw 'Native library missing' }
+      - name: Typecheck all application layers
+        run: npm run typecheck
+      - name: Test existing functionality and direct authorization failures
+        run: npm test -- --reporter=default --reporter=json --outputFile="${{ runner.temp }}/core-miner-022-tests.json"
+      - name: Build and verify Windows installer without publishing
+        run: npm run dist:win
+      - name: Test real packaged QR, Pause, same-key retry and restart offline
+        run: npm run test:packaged:win
+      - name: Record signature and dependency audit
+        run: |
+          npm audit --json | Out-File 'release/Core-Miner-0.2.2-all-dependencies-audit.json' -Encoding utf8
+          $s = Get-AuthenticodeSignature 'release/Core Miner 0.2.2 beta setup.exe'
+          @{Status=$s.Status.ToString();SignerSubject=$s.SignerCertificate.Subject} | ConvertTo-Json | Out-File 'release/Core-Miner-0.2.2-signature-verification.json' -Encoding utf8
+          exit 0
+      - name: Verify delivered installer and record source identity
+        shell: python
+        run: |
+          import pathlib, hashlib, json, subprocess
+          out=pathlib.Path('release'); exe=out/'Core Miner 0.2.2 beta setup.exe'; data=exe.read_bytes()
+          assert data[:2]==b'MZ' and len(data)>10_000_000
+          for name in ['Core-Miner-0.2.2-package-verification.json','Core-Miner-0.2.2-windows-smoke-verification.json']:
+              assert json.loads((out/name).read_text())['passed'],name
+          report={'version':'0.2.2-beta','installer':exe.name,'bytes':len(data),'sha256':hashlib.sha256(data).hexdigest(),'sourceCommit':subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),'appId':'com.msii.miner-core','applicationAuthorizationId':'0x'+'30'.zfill(64),'windowsBuild':True,'packagedQrSmokeTested':True,'realWalletsTested':False,'mainnetMiningTested':False,'installerInteractiveUpgradeTested':False}
+          (out/'Core-Miner-0.2.2-build-verification.json').write_text(json.dumps(report,indent=2))
+          (out/'Core-Miner-0.2.2-SHA256.txt').write_text(report['sha256']+'  '+exe.name+'\n')
+      - name: Preserve sources and test evidence
+        if: always()
+        run: |
+          $out='${{ runner.temp }}/core-miner-022-result'
+          New-Item -ItemType Directory -Force $out | Out-Null
+          git archive --format=zip --output="$out/Core-Miner-0.2.2-source.zip" HEAD
+          Copy-Item '${{ runner.temp }}/core-miner-022-tests.json' "$out/" -ErrorAction SilentlyContinue
+          Copy-Item '${{ runner.temp }}/source-transfer-verification.json' "$out/" -ErrorAction SilentlyContinue
+          Copy-Item '${{ runner.temp }}/transfer-received.b64' "$out/" -ErrorAction SilentlyContinue
+          Copy-Item '${{ runner.temp }}/core-miner-source-commit.txt' "$out/" -ErrorAction SilentlyContinue
+          Copy-Item 'release/*.exe' "$out/" -ErrorAction SilentlyContinue
+          Copy-Item 'release/*verification.json' "$out/" -ErrorAction SilentlyContinue
+          Copy-Item 'release/*audit.json' "$out/" -ErrorAction SilentlyContinue
+          Copy-Item 'release/*SHA256.txt' "$out/" -ErrorAction SilentlyContinue
+          Copy-Item 'docs/UPDATE-0.2.2.md' "$out/" -ErrorAction SilentlyContinue
+          exit 0
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: core-miner-0.2.2-beta-windows
+          path: ${{ runner.temp }}/core-miner-022-result/
+          retention-days: 30
+          if-no-files-found: error
