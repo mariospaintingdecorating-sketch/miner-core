@@ -1,0 +1,97 @@
+name: Core Miner 0.2.1 beta Windows validation
+
+on:
+  push:
+    branches: [work/core-miner-0.2.1-beta]
+    paths:
+      - .github/workflows/core-miner-021-windows.yml
+      - build/upgrade-021/**
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      SOURCE_COMMIT: ${{ github.sha }}
+    steps:
+      - name: Preserve exact source line endings
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify and materialize reviewed source changes
+        run: python build/upgrade-021/apply.py
+      - name: Install locked dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Typecheck application and infrastructure
+        run: npm run typecheck
+      - name: Windows unit and integration tests without real wallets
+        run: npm test -- --reporter=default --reporter=json --outputFile=verification/windows-tests.json
+      - name: Build Windows x64 NSIS installer without publishing
+        run: npm run dist:win -- --publish never
+      - name: Verify actual packaged version, SDK, WASM and DApp
+        run: node build/verify-release-021.cjs
+      - name: Launch packaged EXE with empty temporary profile and blocked browser network
+        run: node build/smoke-windows-021.mjs
+      - name: Record installer signing status and source archive
+        shell: pwsh
+        run: |
+          $signature = Get-AuthenticodeSignature -LiteralPath 'release/Core Miner 0.2.1 beta setup.exe'
+          @{ Status = [string]$signature.Status; SignerSubject = [string]$signature.SignerCertificate.Subject } | ConvertTo-Json | Out-File -Encoding utf8 verification/authenticode.json
+          $manifest = Get-Content verification/update-manifest.json -Raw | ConvertFrom-Json
+          foreach ($file in $manifest) { git add -- $file.path; if ($LASTEXITCODE -ne 0) { throw 'Cannot stage source snapshot' } }
+          $tree = git write-tree
+          git archive --format=zip --output=verification/Core-Miner-0.2.1-beta-source.zip $tree
+          if ($LASTEXITCODE -ne 0) { throw 'Source archive failed' }
+      - name: Upload installer and verification evidence, no release publication
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Core-Miner-0.2.1-beta-Windows
+          path: |
+            release/Core Miner 0.2.1 beta setup.exe
+            verification/
+          retention-days: 14
+          if-no-files-found: error
+
+  preserve-source:
+    needs: windows
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Materialize the same hash-verified source
+        run: python build/upgrade-021/apply.py
+      - name: Commit verified plaintext changes only to the isolated working branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_NAME" = 'work/core-miner-0.2.1-beta'
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          python - <<'PY'
+          import json, subprocess
+          for item in json.load(open('verification/update-manifest.json')):
+              subprocess.run(['git', 'add', '--', item['path']], check=True)
+          PY
+          if git diff --cached --quiet; then exit 0; fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'feat: Core Miner 0.2.1 beta with Bee SDK 5.1.1 and verified DApp authorization'
+          AUTH=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $AUTH" push origin HEAD:refs/heads/work/core-miner-0.2.1-beta
