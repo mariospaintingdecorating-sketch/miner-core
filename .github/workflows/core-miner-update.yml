@@ -6,8 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
-  actions: read
+  contents: read
 
 concurrency:
   group: core-miner-021-update
@@ -16,111 +15,81 @@ concurrency:
 jobs:
   windows-update:
     runs-on: windows-latest
-    timeout-minutes: 35
+    timeout-minutes: 25
     defaults:
       run:
         shell: pwsh
     env:
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
     steps:
-      - name: Checkout isolated update branch
+      - name: Checkout committed update sources
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
       - name: Use Node 24
         uses: actions/setup-node@v4
         with:
           node-version: "24"
-      - name: Verify and apply staged source changes
-        shell: python
+      - name: Verify pinned miner module and install locked dependencies
         run: |
-          import os, pathlib, json, zlib, base64, hashlib, subprocess
-          assert os.environ['GITHUB_REF_NAME'] == 'update/core-miner-0.2.1-beta'
-          p = pathlib.Path('package.json')
-          version = json.loads(p.read_text())['version']
-          if version == '0.1.0-beta.1':
-              patch = zlib.decompress(base64.b64decode(pathlib.Path('build/update-021.patch.zlib.b64').read_text().strip(), validate=True))
-              assert hashlib.sha256(patch).hexdigest() == '8f5bae6177401f0bd08aae5171699d95ee0203954bbbc4951d9ac0c0590948d9', 'Source transfer hash mismatch'
-              target = pathlib.Path(os.environ['RUNNER_TEMP']) / 'core-update.patch'
-              target.write_bytes(patch)
-              subprocess.run(['git','apply','--unidiff-zero','--ignore-space-change','--check',str(target)], check=True)
-              subprocess.run(['git','apply','--unidiff-zero','--ignore-space-change',str(target)], check=True)
-          else:
-              assert version == '0.2.1-beta', 'Unexpected source version'
-      - name: Download verified derived mining module
-        uses: actions/download-artifact@v4
-        with:
-          name: core-miner-queue-sdk
-          run-id: 35531401250
-          github-token: ${{ github.token }}
-          path: ${{ runner.temp }}/mining-sdk
-      - name: Pin the mining module and update dependency lock
-        run: |
-          $sdk = '${{ runner.temp }}/mining-sdk/msii-bee-miner-5.1.1-core.1.tgz'
-          $hash = (Get-FileHash $sdk -Algorithm SHA256).Hash.ToLowerInvariant()
+          $hash = (Get-FileHash 'vendor/msii-bee-miner-5.1.1-core.1.tgz' -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($hash -ne 'ce83fc38df7baf8a07a0dd9a37d88d4c3b588643996c541446a873f3e3746e5e') { throw 'Mining module hash mismatch' }
-          New-Item -ItemType Directory -Force vendor | Out-Null
-          Copy-Item $sdk vendor/ -Force
-          foreach ($item in @('PROVENANCE.json','upstream-changes.patch','Cargo.lock','package-SHA256.txt','wasm-SHA256.txt')) {
-            Copy-Item "${{ runner.temp }}/mining-sdk/$item" "vendor/mining-sdk-$item" -Force
-          }
-          npm install --package-lock-only --ignore-scripts
-          if ($LASTEXITCODE -ne 0) { throw 'Lock update failed' }
           npm ci
           if ($LASTEXITCODE -ne 0) { throw 'Dependency installation failed' }
-      - name: Record readable source changes only on update branch
+      - name: Ensure required native read-only library is available
         run: |
-          if ('${{ github.ref_name }}' -ne 'update/core-miner-0.2.1-beta') { throw 'Refusing to write outside the update branch' }
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add src electron tests docs vendor package.json package-lock.json vite.bee-utility.config.ts
-          git add -f .env.production
-          git diff --cached --quiet
-          if ($LASTEXITCODE -eq 1) {
-            git commit -m 'update: integrate Bee 5.1.1, authorization context, address routing and session pacing [skip ci]'
-            if ($LASTEXITCODE -ne 0) { throw 'Source commit failed' }
-            git push origin HEAD:refs/heads/update/core-miner-0.2.1-beta
-            if ($LASTEXITCODE -ne 0) { throw 'Update branch advanced; refusing to overwrite' }
+          $native = 'node_modules/@eversdk/lib-node/eversdk.node'
+          if (-not (Test-Path $native)) {
+            Push-Location 'node_modules/@eversdk/lib-node'
+            try {
+              node install.js
+              if ($LASTEXITCODE -ne 0) { throw 'Native library installation failed' }
+            } finally { Pop-Location }
           }
-          git rev-parse HEAD | Out-File '${{ runner.temp }}/core-miner-source-commit.txt' -Encoding utf8
+          if (-not (Test-Path $native)) { throw 'Required native library is missing' }
+          node -e "const {TonClient}=require('@eversdk/core');const {libNode}=require('@eversdk/lib-node');TonClient.useBinaryLibrary(libNode);const c=new TonClient();c.crypto.sha256({data:Buffer.from('core-miner-local-smoke').toString('base64')}).then(r=>{console.log('Native local crypto smoke passed',r.hash);c.close();}).catch(e=>{console.error(e);process.exitCode=1;c.close();});"
+          if ($LASTEXITCODE -ne 0) { throw 'Native local smoke failed' }
       - name: Typecheck updated application
         run: npm run typecheck
       - name: Run complete tests without real wallets
         run: npm test -- --reporter=default --reporter=json --outputFile="${{ runner.temp }}/core-miner-021-tests.json"
-      - name: Build Windows x64 installer
+      - name: Build and inspect Windows x64 installer without publishing
         run: npm run dist:win
-      - name: Check packaged SDKs and installer identity
+      - name: Launch packaged UI with empty storage and blocked HTTP
+        run: npm run test:packaged:win
+      - name: Record installer identity and dependency audit
+        run: |
+          npm audit --json | Out-File 'release/Core-Miner-0.2.1-all-dependencies-audit.json' -Encoding utf8
+          $signature = Get-AuthenticodeSignature 'release/Core Miner 0.2.1 beta setup.exe'
+          @{Status=$signature.Status.ToString();SignerSubject=$signature.SignerCertificate.Subject} | ConvertTo-Json | Out-File 'release/Core-Miner-0.2.1-signature-verification.json' -Encoding utf8
+          exit 0
+      - name: Verify installer and write checksum
         shell: python
         run: |
-          import pathlib, hashlib, json
+          import pathlib, hashlib, json, subprocess
           release = pathlib.Path('release')
           installer = release / 'Core Miner 0.2.1 beta setup.exe'
-          assert installer.is_file(), 'Requested installer missing'
           data = installer.read_bytes()
           assert data[:2] == b'MZ' and len(data) > 10_000_000
-          package = json.loads(pathlib.Path('package.json').read_text())
-          assert package['version'] == '0.2.1-beta'
-          assert package['build']['appId'] == 'com.msii.miner-core'
-          expected = {
-            'node_modules/@teamgosh/bee-sdk/bee_sdk_bg.wasm':'deb6f6ea9278f82fab58ed9167adb3cbf3644ecb73a5f7b71acac227a6797e95',
-            'node_modules/@msii/bee-miner/bee_miner_bg.wasm':'9b89b542ea0506ac89bc00bf007fee3f1e71a5238a65bf6408c20ae59795ce30'
-          }
-          for name, digest in expected.items():
-              assert hashlib.sha256(pathlib.Path(name).read_bytes()).hexdigest() == digest, name
-          report = {'version':package['version'],'installer':installer.name,'bytes':len(data),'sha256':hashlib.sha256(data).hexdigest(),'appId':package['build']['appId'],'applicationAuthorizationId':'0x0000000000000000000000000000000000000000000000000000000000000030','sdkHashes':expected,'windowsBuild':True,'realWalletsTested':False,'mainnetMiningTested':False,'authenticodeSigned':False}
+          pkg = json.loads(pathlib.Path('package.json').read_text())
+          assert pkg['version'] == '0.2.1-beta'
+          assert pkg['build']['appId'] == 'com.msii.miner-core'
+          for filename in ['Core-Miner-0.2.1-package-verification.json','Core-Miner-0.2.1-windows-smoke-verification.json']:
+              assert json.loads((release/filename).read_text())['passed'], filename
+          report = {'version':pkg['version'],'installer':installer.name,'bytes':len(data),'sha256':hashlib.sha256(data).hexdigest(),'sourceCommit':subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),'appId':pkg['build']['appId'],'applicationAuthorizationId':'0x0000000000000000000000000000000000000000000000000000000000000030','windowsBuild':True,'packagedWindowsUiSmokeTested':True,'installerInteractiveUpgradeTested':False,'realWalletsTested':False,'mainnetMiningTested':False}
           (release/'Core-Miner-0.2.1-build-verification.json').write_text(json.dumps(report, indent=2))
           (release/'Core-Miner-0.2.1-SHA256.txt').write_text(report['sha256']+'  '+installer.name+'\n')
-      - name: Archive reproducible sources and test evidence
+      - name: Archive sources and test evidence
         if: always()
         run: |
-          New-Item -ItemType Directory -Force '${{ runner.temp }}/core-miner-021-result' | Out-Null
-          git archive --format=zip --output='${{ runner.temp }}/core-miner-021-result/Core-Miner-0.2.1-source.zip' HEAD
-          Copy-Item '${{ runner.temp }}/core-miner-021-tests.json' '${{ runner.temp }}/core-miner-021-result/' -ErrorAction SilentlyContinue
-          Copy-Item '${{ runner.temp }}/core-miner-source-commit.txt' '${{ runner.temp }}/core-miner-021-result/' -ErrorAction SilentlyContinue
-          Copy-Item 'release/*.exe' '${{ runner.temp }}/core-miner-021-result/' -ErrorAction SilentlyContinue
-          Copy-Item 'release/*verification.json' '${{ runner.temp }}/core-miner-021-result/' -ErrorAction SilentlyContinue
-          Copy-Item 'release/*SHA256.txt' '${{ runner.temp }}/core-miner-021-result/' -ErrorAction SilentlyContinue
-          Copy-Item 'docs/UPDATE-0.2.1.md' '${{ runner.temp }}/core-miner-021-result/' -ErrorAction SilentlyContinue
+          $out = '${{ runner.temp }}/core-miner-021-result'
+          New-Item -ItemType Directory -Force $out | Out-Null
+          git archive --format=zip --output="$out/Core-Miner-0.2.1-source.zip" HEAD
+          git rev-parse HEAD | Out-File "$out/core-miner-source-commit.txt" -Encoding utf8
+          Copy-Item '${{ runner.temp }}/core-miner-021-tests.json' "$out/" -ErrorAction SilentlyContinue
+          Copy-Item 'release/*.exe' "$out/" -ErrorAction SilentlyContinue
+          Copy-Item 'release/*verification.json' "$out/" -ErrorAction SilentlyContinue
+          Copy-Item 'release/*audit.json' "$out/" -ErrorAction SilentlyContinue
+          Copy-Item 'release/*SHA256.txt' "$out/" -ErrorAction SilentlyContinue
+          Copy-Item 'docs/UPDATE-0.2.1.md' "$out/" -ErrorAction SilentlyContinue
           exit 0
       - name: Upload installer and evidence
         if: always()
