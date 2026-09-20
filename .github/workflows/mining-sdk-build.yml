@@ -1,0 +1,90 @@
+name: Build queue-aware Bee miner module
+
+on:
+  push:
+    branches: ["update/core-miner-0.2.1-beta"]
+    paths: [".github/workflows/mining-sdk-build.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  miner-module:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: gosh-sh/bee-engine
+          ref: 41ae0611b47256b06fc6dce9943e283e9e96851c
+          path: upstream
+      - name: Limit workspace to public mining dependencies and attach queue sender
+        working-directory: upstream
+        shell: python
+        run: |
+          import pathlib, re, json, hashlib
+          root = pathlib.Path('.')
+          p = root / 'Cargo.toml'
+          text = p.read_text()
+          members = '["bee_miner", "bee_shared", "bee_infra", "bee_errors"]'
+          text, count = re.subn(r'(?m)^members = \[[\s\S]*?\]', 'members = ' + members, text, count=1)
+          assert count == 1
+          text, count = re.subn(r'(?m)^default-members = \[[\s\S]*?\]', 'default-members = ' + members, text, count=1)
+          assert count == 1
+          p.write_text(text)
+          p = root / 'bee_miner/Cargo.toml'
+          text = p.read_text()
+          old = 'bee-infra = { path = "../bee_infra", default-features = false, features = ["tokio"] }'
+          assert text.count(old) == 1
+          p.write_text(text.replace(old, old.replace('["tokio"]', '["tokio", "message-delivery"]')))
+          p = root / 'bee_miner/src/wasm/miner.rs'
+          text = p.read_text()
+          old = 'mvsystem::miner::contract::Miner::new_default(tvm_context.clone(), &address)'
+          new = 'mvsystem::miner::contract::Miner::new_default(bee_infra::message_delivery::contract_context(tvm_context.clone()), &address)'
+          assert text.count(old) == 1
+          p.write_text(text.replace(old, new))
+          out = pathlib.Path('../sdk-artifact')
+          out.mkdir(exist_ok=True)
+          report = {'upstream': 'gosh-sh/bee-engine', 'commit': '41ae0611b47256b06fc6dce9943e283e9e96851c', 'baseVersion': '5.1.1', 'moduleVersion': '5.1.1-core.1', 'changes': ['Select only public mining crates; retain workspace dependency patches', 'Enable existing bee-infra message-delivery feature for miner', 'Inject existing exact-message QUEUE_OVERFLOW sender into the Miner contract'], 'unchanged': ['hashing', 'proof construction', 'message signing', 'application authorization', 'official sender retry policy'], 'networkMiningTested': False}
+          (out/'PROVENANCE.json').write_text(json.dumps(report, indent=2))
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Cache mining build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: upstream -> target
+          cache-on-failure: true
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --version 0.13.1 --locked
+      - name: Compile queue-aware miner
+        working-directory: upstream
+        run: wasm-pack build bee_miner --target web --release --scope msii -- --no-default-features --features wasm
+      - name: Package and record exact output
+        working-directory: upstream
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp LICENSE.md bee_miner/pkg/LICENSE.md
+          cp NOTICE.md bee_miner/pkg/NOTICE.md
+          cp ../sdk-artifact/PROVENANCE.json bee_miner/pkg/PROVENANCE.json
+          node --input-type=commonjs -e 'const fs=require("fs");const p="bee_miner/pkg/package.json";const j=JSON.parse(fs.readFileSync(p));j.name="@msii/bee-miner";j.version="5.1.1-core.1";j.description="Bee 5.1.1 miner with official exact-message queue sender enabled; Core Miner local build";j.files=[...(j.files||[]),"LICENSE.md","NOTICE.md","PROVENANCE.json"];fs.writeFileSync(p,JSON.stringify(j,null,2)+"\n");'
+          npm pack ./bee_miner/pkg --pack-destination ../sdk-artifact --ignore-scripts
+          cp Cargo.lock ../sdk-artifact/Cargo.lock
+          git diff > ../sdk-artifact/upstream-changes.patch
+          sha256sum bee_miner/pkg/bee_miner_bg.wasm > ../sdk-artifact/wasm-SHA256.txt
+          cd ../sdk-artifact
+          sha256sum *.tgz > package-SHA256.txt
+      - name: Upload SDK and build evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-miner-queue-sdk
+          path: sdk-artifact/
+          retention-days: 30
+          if-no-files-found: error
