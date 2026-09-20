@@ -1,3 +1,4 @@
+import { miningAuthorizationContext } from '../../shared/chainIdentity';
 import { describe, expect, it, vi } from 'vitest';
 import type {
   CanonicalChainStateProvider,
@@ -43,6 +44,7 @@ function wallet(walletId = 'wallet-a'): Readonly<WalletSnapshot> {
 function serializedCredential(walletId = 'wallet-a'): string {
   return JSON.stringify({
     version: 1,
+    authorizationContext: miningAuthorizationContext(CONFIGURATION.value!),
     walletName: `canonical-${walletId}`,
     walletAddress: `0:${walletId}-address`,
     minerAddress: SYNTHETIC_MINER_ADDRESS,

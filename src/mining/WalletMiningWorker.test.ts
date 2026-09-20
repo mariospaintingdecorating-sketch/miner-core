@@ -148,7 +148,7 @@ function fixture(input: Readonly<{
     submissionGuard: input.submissionGuard,
     rewardDispatchLimiter: input.rewardLimiter,
     automaticContinuationEnabled: input.automaticContinuationEnabled,
-    options: input.options,
+    options: { firstTapDelayMs: 0, minimumStartWindowMs: 0, tapIntervalMs: 1_730, sessionDurationMs: 135_000, epochEndSafetyMarginMs: 35_000, rewardTimeoutMs: 20_000, ...input.options },
   });
   return { worker, miner, adapter, timer, epoch, diagnostics, sequence: 0 };
 }

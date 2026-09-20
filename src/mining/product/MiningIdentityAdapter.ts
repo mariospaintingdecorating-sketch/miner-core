@@ -1,3 +1,4 @@
+import { mobileContractAddress, sameWalletAddress, miningAuthorizationContext } from '../../shared/chainIdentity';
 import type { RuntimePreflight } from '../../application/RuntimePreflight';
 import type { ProductionConfigurationResolution } from '../../application/productionConfiguration';
 import { parseStoredBeeMiningCredential } from '../../services/bee/BeeWalletConnectionAdapter';
@@ -96,7 +97,7 @@ export class ProductMiningIdentityAdapter implements MiningIdentitySource {
 
     if (
       !wallet.walletAddress ||
-      credential.walletAddress !== wallet.walletAddress
+      !sameWalletAddress(credential.walletAddress, wallet.walletAddress)
     ) {
       throw new MiningIdentityPreparationError('WALLET_IDENTITY_MISMATCH');
     }
@@ -107,6 +108,14 @@ export class ProductMiningIdentityAdapter implements MiningIdentitySource {
       throw new MiningIdentityPreparationError('PUBLIC_KEY_INVALID');
     }
 
+    if (credential.authorizationContext !== miningAuthorizationContext(configuration)) {
+      throw new MiningIdentityPreparationError('SECURE_CREDENTIAL_INVALID', 'mining-context-verification-required');
+    }
+    const current = this.walletRegistry.wallet(normalizedWalletId);
+    if (!current || current.miningCredentialReference !== wallet.miningCredentialReference ||
+        current.connectionReference !== wallet.connectionReference || current.walletAddress !== wallet.walletAddress) {
+      throw new MiningIdentityPreparationError('WALLET_IDENTITY_MISMATCH');
+    }
     return immutableValidatedMiningIdentity({
       walletId: normalizedWalletId,
       endpoints: configuration.endpoints,
@@ -158,7 +167,7 @@ export function validEndpoints(endpoints: readonly string[]): boolean {
 }
 
 export function validMinerAddress(value: string): boolean {
-  return /^-?\d+:[0-9a-f]{64}$/i.test(value);
+  try { mobileContractAddress(value); return true; } catch { return false; }
 }
 
 export function validMiningPublicKey(value: string): boolean {

@@ -1,10 +1,11 @@
 import {
   BeeConnect,
   Crypto,
-  Miner,
   ensure_mining_keys_propagated,
   get_miner_address_by_wallet_name,
 } from '@teamgosh/bee-sdk';
+import { createQueueAwareMiner } from './QueueAwareMinerSdk';
+import { mobileContractAddress } from '../../shared/chainIdentity';
 import type { BeeSdkOwnedResource } from './contracts';
 
 export interface BeeNativeSharedKeySession extends BeeSdkOwnedResource {
@@ -140,7 +141,7 @@ export class TeamGoshBeeNativeSdk implements BeeNativeSdkFactory {
   ): Promise<void> {
     return ensure_mining_keys_propagated({
       client_config: { network: { endpoints: [...endpoints] } },
-      miner_address: minerAddress,
+      miner_address: mobileContractAddress(minerAddress),
       app_id: appId,
       expected_owner_public: expectedOwnerPublic,
       max_attempts: maxAttempts,
@@ -155,6 +156,6 @@ export class TeamGoshBeeNativeSdk implements BeeNativeSdkFactory {
     publicKey: string,
     secretKey: string,
   ): Promise<BeeNativeMiner> {
-    return Miner.new([...endpoints], appId, address, publicKey, secretKey);
+    return createQueueAwareMiner(endpoints, appId, address, publicKey, secretKey);
   }
 }

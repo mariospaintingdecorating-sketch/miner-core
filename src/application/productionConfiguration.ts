@@ -44,7 +44,7 @@ export interface ProductionConfigurationResolution {
   readonly value: Readonly<ResolvedProductionConfiguration> | null;
 }
 
-const DEFAULT_MAXIMUM_SESSION_DURATION_MS = 135_000;
+const DEFAULT_MAXIMUM_SESSION_DURATION_MS = 126_000;
 const MAXIMUM_ALLOWED_SESSION_DURATION_MS = 330_000;
 const DEFAULT_BEE_API_URL = 'https://app-backend.ackinacki.org/api';
 

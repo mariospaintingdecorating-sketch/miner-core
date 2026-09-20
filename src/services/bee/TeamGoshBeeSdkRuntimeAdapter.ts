@@ -8,9 +8,9 @@ export class TeamGoshBeeSdkRuntimeAdapter implements BeeSdkRuntimeAdapter {
     await initializeBeeSdk({ module_or_path: beeSdkWasmUrl });
   }
 
-  version(): null {
-    // The SDK exposes no runtime version function.
-    return null;
+  version(): string {
+    // Build-time pin is checked against package metadata and WASM SHA-256 in CI.
+    return '5.1.1';
   }
 
   dispose(): void {

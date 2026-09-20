@@ -358,13 +358,13 @@ export class MiningRuntimeRouter {
     try {
       const result = await runtime.start();
       return startResult(
-        result.status === 'STARTED' || result.status === 'ALREADY_ACTIVE',
-        result.status === 'STARTED'
+        result.status === 'STARTED' || result.status === 'ALREADY_ACTIVE' || result.status === 'WAITING_EPOCH',
+        result.status === 'WAITING_EPOCH' ? 'runtime-waiting-epoch' : result.status === 'STARTED'
           ? 'started'
           : result.status === 'ALREADY_ACTIVE'
             ? 'runtime-already-active'
             : 'runtime-start-failed',
-        result.status === 'STARTED'
+        result.status === 'WAITING_EPOCH' ? 'Waiting for a safe mini-epoch start window.' : result.status === 'STARTED'
           ? 'Wallet mining runtime started.'
           : result.status === 'ALREADY_ACTIVE'
             ? 'The wallet runtime is already active.'

@@ -1,3 +1,5 @@
+import { approvalReadBefore } from './ApprovalDeadline';
+import { miningAuthorizationContext } from '../../shared/chainIdentity';
 import type { CoreEvent, EventPublisher } from '../../shared/events';
 import { CoreEventEmitter } from '../../shared/events';
 import type { SecureReferenceStorageContract } from '../../storage/contracts';
@@ -39,6 +41,8 @@ const PROPAGATION_MAX_ATTEMPTS = 60;
 const PROPAGATION_INTERVAL_MS = 2_000;
 
 interface StoredConnectionState {
+  readonly authorizationContext: string | null;
+  readonly approvalDeadlineMs: number | null;
   readonly version: 1;
   readonly status: 'awaiting-approval' | 'connected' | 'failed';
   readonly sessionId: string;
@@ -54,6 +58,7 @@ interface StoredConnectionState {
 }
 
 interface StoredMiningCredential {
+  readonly authorizationContext: string | null;
   readonly version: 1;
   readonly walletName: string;
   readonly walletAddress: string;
@@ -162,6 +167,8 @@ export class BeeWalletConnectionAdapter
       try {
         const expiresAt = Number(result.expires_at);
         const state: StoredConnectionState = Object.freeze({
+          authorizationContext: miningAuthorizationContext(this.configuration),
+          approvalDeadlineMs: Date.now() + 180_000,
           version: 1,
           status: 'awaiting-approval',
           sessionId: result.session_id,
@@ -184,7 +191,7 @@ export class BeeWalletConnectionAdapter
         return Object.freeze({
           reference,
           deepLink: result.deep_link,
-          expiresAt,
+          expiresAt: Math.min(expiresAt, Math.floor(state.approvalDeadlineMs! / 1000)),
         });
       } finally {
         this.gateway.releaseResource(result);
@@ -268,10 +275,12 @@ export class BeeWalletConnectionAdapter
     state: StoredConnectionState,
   ): Promise<BeeNativeWalletHello> {
     let retryIndex = 0;
+    const deadline = state.approvalDeadlineMs ?? Date.now() + 180_000;
 
     while (true) {
+      if (Date.now() >= deadline) throw new Error('Wallet approval timed out.');
       try {
-        return await this.#connectionClient().wait_wallet_hello(
+        return await approvalReadBefore(this.#connectionClient().wait_wallet_hello(
           [...this.configuration.endpoints],
           state.sessionId,
           state.description,
@@ -279,7 +288,7 @@ export class BeeWalletConnectionAdapter
           BigInt(state.createdAt),
           WALLET_HELLO_MAX_ATTEMPTS,
           WALLET_HELLO_INTERVAL_MS,
-        );
+        ), deadline);
       } catch (error) {
         const delayMs = WALLET_HELLO_READ_RETRY_DELAYS_MS[retryIndex];
 
@@ -320,6 +329,10 @@ export class BeeWalletConnectionAdapter
       });
     }
 
+    if (state.authorizationContext !== miningAuthorizationContext(this.configuration)) {
+      throw new Error('Bee connection belongs to an unknown or different application context. Reconnect before creating new mining keys; existing keys are retained.');
+    }
+
     const credentialReference = this.createReference('credential');
     await this.gateway.initialize();
     const keys = this.gateway.ownResource(
@@ -346,6 +359,7 @@ export class BeeWalletConnectionAdapter
 
       try {
         const credential: StoredMiningCredential = Object.freeze({
+          authorizationContext: null,
           version: 1,
           walletName: state.walletName,
           walletAddress: state.walletAddress,
@@ -435,20 +449,31 @@ export class BeeWalletConnectionAdapter
         maxAttempts,
         intervalMs,
       );
+      const latestConnection = await this.#loadConnection(reference);
+      const latestCredential = await this.storage.loadSecureValue(credentialReference);
+      if (!latestConnection || latestConnection.credentialReference !== credentialReference ||
+          latestCredential !== serialized) {
+        throw new Error('Mining credential changed during verification. No record was overwritten.');
+      }
+      await this.storage.saveSecureValue(credentialReference, JSON.stringify({
+        ...JSON.parse(serialized),
+        authorizationContext: miningAuthorizationContext(this.configuration),
+      }));
       await this.storage.saveSecureValue(
         reference,
-        JSON.stringify({ ...state, failure: null } satisfies StoredConnectionState),
+        JSON.stringify({ ...latestConnection, failure: null } satisfies StoredConnectionState),
       );
     } catch (error) {
       const failure = errorFailure(
         'bee-mining-credential-propagation-failed',
         error,
       );
-      const failed = Object.freeze({ ...state, failure });
-      await this.storage
-        .saveSecureValue(reference, JSON.stringify(failed))
-        .catch(() => undefined);
-      this.#publishConnectionFailure(failure, failed);
+      const current = await this.#loadConnection(reference).catch(() => null);
+      if (current?.credentialReference === credentialReference) {
+        const failed = Object.freeze({ ...current, failure });
+        await this.storage.saveSecureValue(reference, JSON.stringify(failed)).catch(() => undefined);
+        this.#publishConnectionFailure(failure, failed);
+      }
       throw error;
     }
   }
@@ -539,6 +564,8 @@ export class BeeWalletConnectionAdapter
     }
 
     return {
+      approvalDeadlineMs: typeof parsed.approvalDeadlineMs === 'number' && Number.isFinite(parsed.approvalDeadlineMs) ? parsed.approvalDeadlineMs : null,
+      authorizationContext: typeof parsed.authorizationContext === 'string' ? parsed.authorizationContext : null,
       version: 1,
       status,
       sessionId: requiredText(parsed.sessionId, 'Session ID'),
@@ -613,6 +640,7 @@ export class BeeWalletConnectionAdapter
 }
 
 export function parseStoredBeeMiningCredential(value: string): Readonly<{
+  authorizationContext: string | null;
   walletName: string;
   walletAddress: string;
   minerAddress: string;
@@ -626,6 +654,7 @@ export function parseStoredBeeMiningCredential(value: string): Readonly<{
   }
 
   return Object.freeze({
+    authorizationContext: typeof parsed.authorizationContext === 'string' ? parsed.authorizationContext : null,
     walletName: requiredText(parsed.walletName, 'Wallet name'),
     walletAddress: requiredText(parsed.walletAddress, 'Wallet address'),
     minerAddress: requiredText(parsed.minerAddress, 'Miner address'),

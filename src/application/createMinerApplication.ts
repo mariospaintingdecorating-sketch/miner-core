@@ -1,3 +1,4 @@
+import { restoreAuthorizationReadiness } from './restoreAuthorizationReadiness';
 import {
   PRODUCTION_TAP_PACING,
   type TapPacingSource,
@@ -61,7 +62,7 @@ import { WALLET_MINING_RUNTIME_CONSTRUCTIBILITY_INSPECTOR } from '../mining/comp
 import { WalletMiningRuntimeFactory } from '../mining/composition/WalletMiningRuntimeFactory';
 import {
   BeeMiningNativeAdapter,
-  TeamGoshBee4MiningNativeSdkAccess,
+  TeamGoshBeeMiningNativeSdkAccess,
 } from '../mining/bee/BeeMiningNativeAdapter';
 import { ElectronBeeMiningNativeAdapter } from '../mining/bee/ElectronBeeMiningNativeAdapter';
 import type { MiningNativeAdapter } from '../mining/WalletMiningRuntime';
@@ -160,6 +161,7 @@ export async function createMinerApplication(
   const rewardLedger = new RewardLedger(eventBus, rewardHistory, storage);
   const nativeSdk = options.beeNativeSdk ?? new TeamGoshBeeNativeSdk();
   const configured = configuration.value;
+  if (configured && secureStorage) await restoreAuthorizationReadiness(walletRegistry, secureStorage, configured);
   let walletConnectionAdapter: BeeWalletConnectionAdapter | null = null;
   const defaultWalletDataSource = configured
     ? new BeeWalletBalanceSource(
@@ -419,7 +421,7 @@ function productionMiningNativeAdapter(
     if (bridge) return new ElectronBeeMiningNativeAdapter(bridge);
   }
   return new BeeMiningNativeAdapter(
-    new TeamGoshBee4MiningNativeSdkAccess(
+    new TeamGoshBeeMiningNativeSdkAccess(
       options.beeRuntimeAdapter ?? new TeamGoshBeeSdkRuntimeAdapter(),
       nativeSdk,
     ),

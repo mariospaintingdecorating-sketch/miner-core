@@ -10,7 +10,7 @@ import type {
 import { MiningNativeAdapterError } from '../WalletMiningRuntime';
 import {
   BeeMiningNativeAdapter,
-  type Bee4MiningNativeSdkAccess,
+  type BeeMiningNativeSdkAccess,
 } from './BeeMiningNativeAdapter';
 
 const INPUT: Readonly<NativeMinerCreationInput> = Object.freeze({
@@ -87,7 +87,7 @@ class FakeBeeMiner implements BeeNativeMiner {
   }
 }
 
-class FakeBee4Access implements Bee4MiningNativeSdkAccess {
+class FakeBee4Access implements BeeMiningNativeSdkAccess {
   initializeCalls = 0;
   createCalls: CreateCall[] = [];
   createError: unknown = null;

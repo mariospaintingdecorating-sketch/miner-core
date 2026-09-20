@@ -1,3 +1,4 @@
+import { parseMinerContractAddress } from './chainAddress.cjs';
 import { TonClient } from '@eversdk/core';
 import { libNode } from '@eversdk/lib-node';
 
@@ -90,11 +91,11 @@ async function handleMessage(message: unknown): Promise<void> {
 
     const endpoint = validateEndpoint(message.endpoint);
     const minerAddress = validateMinerAddress(message.minerAddress);
-    const rawAccountId = minerAddress.slice(2);
+    const identity = parseMinerContractAddress(minerAddress);
     client = new TonClient({ network: { endpoints: [endpoint] } });
     const response = await client.net.query({
       query: ACCOUNT_QUERY,
-      variables: { accountId: rawAccountId, dappId: rawAccountId },
+      variables: { accountId: identity.accountId, dappId: identity.dappId },
     });
     const result = asRecord(response.result);
     const data = asRecord(result?.data);
@@ -112,7 +113,7 @@ async function handleMessage(message: unknown): Promise<void> {
     } as const;
     const encoded = await client.abi.encode_message({
       abi,
-      address: minerAddress,
+      address: identity.localAddress,
       signer: { type: 'None' },
       call_set: { function_name: 'getDetails', input: {} },
     });
@@ -167,10 +168,8 @@ function validateEndpoint(value: string): string {
 }
 
 function validateMinerAddress(value: string): string {
-  if (!/^0:[0-9a-f]{64}$/i.test(value)) {
-    throw new TypeError('Invalid Miner contract address.');
-  }
-  return value;
+  parseMinerContractAddress(value);
+  return value as string;
 }
 
 function unwrapOptional(value: unknown): unknown {

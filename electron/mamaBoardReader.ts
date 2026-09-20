@@ -1,3 +1,4 @@
+import { parseMinerContractAddress } from './chainAddress.cjs';
 import { fork, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -111,11 +112,8 @@ function validateEndpoint(value: unknown): string {
 }
 
 function validateMinerAddress(value: unknown): string {
-  if (typeof value !== 'string' || !/^0:[0-9a-f]{64}$/i.test(value)) {
-    throw new TypeError('Invalid Miner contract address.');
-  }
-
-  return value;
+  parseMinerContractAddress(value);
+  return value as string;
 }
 
 function resolveSystemNode(): string {

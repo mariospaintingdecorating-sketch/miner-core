@@ -385,7 +385,8 @@ export class WalletConnectionService implements WalletConnectionOperations {
       validate: (wallet) =>
         wallet.connectionReference &&
         wallet.miningCredentialReference &&
-        (wallet.onboardingStatus === 'awaiting-mining-key-approval' ||
+        (wallet.onboardingStatus === 'ready' ||
+          wallet.onboardingStatus === 'awaiting-mining-key-approval' ||
           (wallet.onboardingStatus === 'failed' && wallet.walletAddress))
           ? null
           : this.#result(

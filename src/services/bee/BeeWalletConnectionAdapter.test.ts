@@ -424,3 +424,30 @@ describe('BeeWalletConnectionAdapter', () => {
     await gateway.dispose();
   });
 });
+
+describe('5.1.1 app-context verification', () => {
+  it('records the new authorization context only after successful propagation', async () => {
+    const f=fixture();
+    const adapter=new BeeWalletConnectionAdapter(f.gateway,f.storage,{endpoints:['https://node.example'],appId:'0x'+'30'.padStart(64,'0')},f.nativeSdk,f.eventBus,references());
+    await adapter.beginConnection();await adapter.awaitConnection('connection-ref');await adapter.prepareMiningCredential('connection-ref');
+    expect(JSON.parse(f.storage.values.get('credential-ref')!).authorizationContext).toBeNull();
+    await adapter.verifyMiningCredentialPropagation('connection-ref','credential-ref');
+    expect(JSON.parse(f.storage.values.get('credential-ref')!).authorizationContext).toContain('0030');
+  });
+  it('retains the exact old credential when propagation fails', async () => {
+    const f=fixture();
+    const adapter=new BeeWalletConnectionAdapter(f.gateway,f.storage,{endpoints:['https://node.example'],appId:'new-app'},f.nativeSdk,f.eventBus,references());
+    await adapter.beginConnection();await adapter.awaitConnection('connection-ref');await adapter.prepareMiningCredential('connection-ref');
+    const before=f.storage.values.get('credential-ref');
+    vi.mocked(f.nativeSdk.ensureMiningKeysPropagated).mockRejectedValueOnce(new Error('not authorized'));
+    await expect(adapter.verifyMiningCredentialPropagation('connection-ref','credential-ref')).rejects.toThrow('not authorized');
+    expect(f.storage.values.get('credential-ref')).toBe(before);
+  });
+  it('does not overwrite a replaced record when a verification response arrives late', async () => {
+    const f=fixture();const adapter=new BeeWalletConnectionAdapter(f.gateway,f.storage,{endpoints:['https://node.example'],appId:'app'},f.nativeSdk,f.eventBus,references());
+    await adapter.beginConnection();await adapter.awaitConnection('connection-ref');await adapter.prepareMiningCredential('connection-ref');
+    vi.mocked(f.nativeSdk.ensureMiningKeysPropagated).mockImplementationOnce(async()=>{f.storage.values.set('credential-ref',JSON.stringify({version:1,secretKey:'replacement'}));});
+    await expect(adapter.verifyMiningCredentialPropagation('connection-ref','credential-ref')).rejects.toThrow('changed during');
+    expect(JSON.parse(f.storage.values.get('credential-ref')!).secretKey).toBe('replacement');
+  });
+});

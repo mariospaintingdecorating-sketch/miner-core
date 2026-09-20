@@ -7,7 +7,7 @@ export default defineConfig({
     emptyOutDir: false,
     minify: false,
     rollupOptions: {
-      external: ['electron', '@teamgosh/bee-sdk'],
+      external: ['electron', '@teamgosh/bee-sdk', '@msii/bee-miner'],
       output: {
         entryFileNames: 'beeMiningUtilityWorker.js',
       },

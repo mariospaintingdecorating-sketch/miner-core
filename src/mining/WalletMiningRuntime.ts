@@ -147,7 +147,7 @@ export interface TapCoordinates {
 }
 
 export interface WalletMiningRandomSource {
-  tapCoordinates(): Readonly<TapCoordinates>;
+  tapCoordinates(index?: number): Readonly<TapCoordinates>;
   tapJitterMs(rangeMs: number): number;
 }
 
@@ -333,7 +333,7 @@ export type WalletMiningStopReason =
   | 'APPLICATION_DISPOSAL';
 
 export type WalletMiningStartResult = Readonly<{
-  status: 'STARTED' | 'ALREADY_ACTIVE' | 'CANCELLED' | 'FAILED';
+  status: 'STARTED' | 'ALREADY_ACTIVE' | 'WAITING_EPOCH' | 'CANCELLED' | 'FAILED';
   sessionId: string | null;
   generationToken: string | null;
 }>;
@@ -359,6 +359,8 @@ export interface WalletMiningRuntime {
 
 export interface WalletMiningWorkerOptions {
   readonly targetTaps: number;
+  readonly firstTapDelayMs: number;
+  readonly minimumStartWindowMs: number;
   readonly sessionDurationMs: number;
   readonly epochEndSafetyMarginMs: number;
   readonly fleetStartSlotIndex: number;
@@ -374,16 +376,18 @@ export interface WalletMiningWorkerOptions {
 export const DEFAULT_WALLET_MINING_WORKER_OPTIONS: Readonly<WalletMiningWorkerOptions> =
   Object.freeze({
     targetTaps: 70,
-    sessionDurationMs: 135_000,
-    epochEndSafetyMarginMs: 35_000,
+    firstTapDelayMs: 1_720,
+    minimumStartWindowMs: 145_000,
+    sessionDurationMs: 126_000,
+    epochEndSafetyMarginMs: 19_000,
     fleetStartSlotIndex: 0,
     fleetStartSlotCount: 1,
     epochStartDelayMs: 5_000,
-    tapIntervalMs: 1_730,
+    tapIntervalMs: 1_720,
     tapJitterRangeMs: 0,
     terminalCallbackGraceMs: 30_000,
     settlementTimeoutMs: 600_000,
-    rewardTimeoutMs: 20_000,
+    rewardTimeoutMs: 65_000,
   });
 
 export const SYSTEM_WALLET_MINING_TIMER: WalletMiningTimerSource = Object.freeze({
@@ -395,11 +399,11 @@ export const SYSTEM_WALLET_MINING_TIMER: WalletMiningTimerSource = Object.freeze
 });
 
 export const SYSTEM_WALLET_MINING_RANDOM: WalletMiningRandomSource = Object.freeze({
-  tapCoordinates: () =>
-    Object.freeze({
-      x: 40 + Math.random() * 320,
-      y: 80 + Math.random() * 560,
-    }),
+  tapCoordinates: (index = 0) => {
+    const points = [[120,120],[180,135],[230,160],[275,190],[245,225],[195,245],[145,220],[105,185]] as const;
+    const point = points[Math.max(0, Math.trunc(index)) % points.length];
+    return Object.freeze({ x: point[0], y: point[1] });
+  },
   tapJitterMs: (rangeMs: number) => Math.round((Math.random() * 2 - 1) * rangeMs),
 });
 

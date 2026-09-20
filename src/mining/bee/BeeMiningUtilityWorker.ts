@@ -1,4 +1,5 @@
-import initializeBeeSdk, { Miner } from '@teamgosh/bee-sdk';
+import initializeBeeSdk, { Miner } from '@msii/bee-miner';
+import { mobileContractAddress } from '../../shared/chainIdentity';
 import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
@@ -55,7 +56,7 @@ async function handleRequest(value: unknown): Promise<BeeMiningUtilityResponse> 
         const miner = await Miner.new(
           [...creation.endpoints],
           creation.appId,
-          creation.minerAddress,
+          mobileContractAddress(creation.minerAddress),
           creation.publicKey,
           creation.secretKey,
         );
@@ -131,8 +132,8 @@ function initialize(): Promise<void> {
     initialization = (async () => {
       installBeeUtilityBrowserEnvironment();
       const require = createRequire(import.meta.url);
-      const entry = require.resolve('@teamgosh/bee-sdk');
-      const bytes = await readFile(join(dirname(entry), 'bee_sdk_bg.wasm'));
+      const entry = require.resolve('@msii/bee-miner');
+      const bytes = await readFile(join(dirname(entry), 'bee_miner_bg.wasm'));
       await initializeBeeSdk({ module_or_path: bytes });
     })();
   }

@@ -371,8 +371,8 @@ export function WalletsPage({
                   : t('Prepare mining credential')}
               </button>
             ) : null}
-            {(selectedWallet.connection.onboardingStatus ===
-              'awaiting-mining-key-approval' &&
+            {((selectedWallet.connection.onboardingStatus === 'ready' || selectedWallet.connection.onboardingStatus ===
+              'awaiting-mining-key-approval') &&
               selectedWallet.connection.miningCredentialStored === true) ||
             (selectedWallet.connection.onboardingStatus === 'failed' &&
               failedDuringMiningCredentialPropagation(selectedWallet)) ? (

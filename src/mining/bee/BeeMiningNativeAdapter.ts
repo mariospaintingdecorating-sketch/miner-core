@@ -16,7 +16,7 @@ import type {
 import { normalizeBeeNativeCallback } from './BeeNativeCallbackParser';
 import { beeMiningNativeAdapterError } from './BeeNativeErrorParser';
 
-export interface Bee4MiningNativeSdkAccess {
+export interface BeeMiningNativeSdkAccess {
   initialize(): Promise<void>;
   createMiner(
     endpoints: readonly string[],
@@ -27,9 +27,9 @@ export interface Bee4MiningNativeSdkAccess {
   ): Promise<BeeNativeMiner>;
 }
 
-/** Official Bee 4 bindings only; it owns no Miner or wallet lifecycle state. */
-export class TeamGoshBee4MiningNativeSdkAccess
-  implements Bee4MiningNativeSdkAccess
+/** Bee 5.1.1 bindings only; it owns no Miner or wallet lifecycle state. */
+export class TeamGoshBeeMiningNativeSdkAccess
+  implements BeeMiningNativeSdkAccess
 {
   readonly #runtime: Pick<BeeSdkRuntimeAdapter, 'initialize'>;
   readonly #nativeSdk: BeeNativeSdkFactory;
@@ -64,13 +64,13 @@ export class TeamGoshBee4MiningNativeSdkAccess
   }
 }
 
-/** Official Bee 4 translation boundary for the WalletMiningWorker contract. */
+/** Bee 5.1.1 translation boundary for the WalletMiningWorker contract. */
 export class BeeMiningNativeAdapter implements MiningNativeAdapter {
   #initialization: Promise<void> | null = null;
 
   constructor(
-    private readonly sdk: Bee4MiningNativeSdkAccess =
-      new TeamGoshBee4MiningNativeSdkAccess(),
+    private readonly sdk: BeeMiningNativeSdkAccess =
+      new TeamGoshBeeMiningNativeSdkAccess(),
   ) {}
 
   async createMiner(

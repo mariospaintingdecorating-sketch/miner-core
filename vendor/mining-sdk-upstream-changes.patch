@@ -1,0 +1,65 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index dde35d7..8c9a5e9 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -1,32 +1,13 @@
+ 
+ [workspace]
+ resolver = "3"
+-members = [
+-    "bee_sdk",
+-    "bee_miner",
+-    "bee_shared",
+-    "bee_verifier",
+-    "bee_wallet",
+-    "bee_connect",
+-    "bee_infra",
+-    "bee_crypto",
+-    "bee_errors",
+-    "tools/queue_overflow_proxy",
+-]
++members = ["bee_miner", "bee_shared", "bee_infra", "bee_errors"]
+ # `bee_sdk` is the wasm-aggregator (forces `single-wasm` on its deps, which
+ # leaks wasm-only code into native builds via feature unification).
+ # `bee_verifier` targets `wasm32-wasip2` and won't build under the host target.
+ # Excluding both from default-members keeps `cargo run|build|test` from the
+ # workspace root scoped to crates that compile cleanly natively.
+-default-members = [
+-    "bee_miner",
+-    "bee_shared",
+-    "bee_wallet",
+-    "bee_connect",
+-    "bee_infra",
+-    "bee_crypto",
+-    "bee_errors",
+-]
++default-members = ["bee_miner", "bee_shared", "bee_infra", "bee_errors"]
+ 
+ [workspace.package]
+ version = "5.1.1"
+diff --git a/bee_miner/Cargo.toml b/bee_miner/Cargo.toml
+index 5207572..3c2c335 100644
+--- a/bee_miner/Cargo.toml
++++ b/bee_miner/Cargo.toml
+@@ -30,7 +30,7 @@ hex.workspace = true
+ js-sys = { optional = true, version = "0.3.83" }
+ rs_merkle.workspace = true
+ bee-shared = { path = "../bee_shared" }
+-bee-infra = { path = "../bee_infra", default-features = false, features = ["tokio"] }
++bee-infra = { path = "../bee_infra", default-features = false, features = ["tokio", "message-delivery"] }
+ serde.workspace = true
+ serde_json.workspace = true
+ thiserror = "2.0.17"
+diff --git a/bee_miner/src/wasm/miner.rs b/bee_miner/src/wasm/miner.rs
+index 1e95951..f2158b5 100644
+--- a/bee_miner/src/wasm/miner.rs
++++ b/bee_miner/src/wasm/miner.rs
+@@ -70,7 +70,7 @@ impl Miner {
+         };
+ 
+         // Read current complexity and seeds from contract
+-        let contract = mvsystem::miner::contract::Miner::new_default(tvm_context.clone(), &address);
++        let contract = mvsystem::miner::contract::Miner::new_default(bee_infra::message_delivery::contract_context(tvm_context.clone()), &address);
+         let keys = KeyPair { public: public_key, secret: secret_key };
+         let details = match contract.get_details().await {
+             Ok(data) => data,

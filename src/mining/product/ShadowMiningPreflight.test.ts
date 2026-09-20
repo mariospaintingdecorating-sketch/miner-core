@@ -1,3 +1,4 @@
+import { miningAuthorizationContext } from '../../shared/chainIdentity';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
@@ -72,6 +73,7 @@ function credential(
 ): string {
   return JSON.stringify({
     version: 1,
+    authorizationContext: miningAuthorizationContext(READY_CONFIGURATION.value!),
     walletName: `Wallet ${WALLET_ID}`,
     walletAddress: WALLET_ADDRESS,
     minerAddress: MINER_ADDRESS,

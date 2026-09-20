@@ -1,0 +1,19 @@
+{
+  "upstream": "gosh-sh/bee-engine",
+  "commit": "41ae0611b47256b06fc6dce9943e283e9e96851c",
+  "baseVersion": "5.1.1",
+  "moduleVersion": "5.1.1-core.1",
+  "changes": [
+    "Select only public mining crates; retain workspace dependency patches",
+    "Enable existing bee-infra message-delivery feature for miner",
+    "Inject existing exact-message QUEUE_OVERFLOW sender into the Miner contract"
+  ],
+  "unchanged": [
+    "hashing",
+    "proof construction",
+    "message signing",
+    "application authorization",
+    "official sender retry policy"
+  ],
+  "networkMiningTested": false
+}
