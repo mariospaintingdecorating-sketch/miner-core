@@ -18,7 +18,7 @@ function fixture() {
   const storage = { hasSecureValue: vi.fn(async (ref:string) => values.has(ref)), loadSecureValue: vi.fn(async (ref:string) => values.get(ref) ?? null), saveSecureValue: vi.fn(async (ref:string,value:string) => { values.set(ref,value); }), removeSecureValue: vi.fn(async (ref:string) => { values.delete(ref); }) };
   const gateway = new BeeSdkGateway({initialize:async()=>undefined,version:()=> '5.1.1',dispose:()=>undefined});
   const free = vi.fn();
-  const sdk = {generate:vi.fn(async()=>({public:PUB,secret:SECRET,deep_link:link(),free})),resolve:vi.fn(async(_endpoints:readonly string[],_name:string,_api:string,_app:string)=>({walletAddress,minerAddress})),verify:vi.fn(async ():Promise<void>=>undefined)} satisfies DirectWalletAuthorizationSdk;
+  const sdk = {generate:vi.fn(async()=>({public:PUB,secret:SECRET,deep_link:link(),free})),resolve:vi.fn(async(_endpoints:readonly string[],_name:string,_api:string,_app:string)=>({walletAddress,minerAddress})),verify:vi.fn(async (..._args:Parameters<DirectWalletAuthorizationSdk['verify']>):Promise<void>=>undefined)} satisfies DirectWalletAuthorizationSdk;
   const eventBus = new CoreEventEmitter(); const events: unknown[] = []; for (const type of ['bee-wallet-connection-started','bee-wallet-connected','bee-wallet-connection-failed'] as const) eventBus.subscribe(type,e=>events.push(e));
   let sequence=0;
   const adapter = new BeeWalletConnectionAdapter(gateway,storage,config,sdk,eventBus,kind=>`${kind}:${++sequence}`);

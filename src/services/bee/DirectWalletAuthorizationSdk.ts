@@ -54,7 +54,7 @@ export function miningVerificationEndpointGroups(endpoints: readonly string[]): 
   const groups: string[][] = [[...endpoints]];
   const hosts = endpoints.map(value => new URL(value).hostname);
   if (hosts.length && hosts.every(host => host === 'mainnet.ackinacki.org' || host === 'mainnet-cf.ackinacki.org')) {
-    for (const host of ['mainnet-cf.ackinacki.org', 'mainnet.ackinacki.org']) {
+    for (const host of ['mainnet-cf.ackinacki.org', 'mainnet.ackinacki.org'] as const) {
       if (!hosts.includes(host)) groups.push([`https://${host}`]);
     }
   }
