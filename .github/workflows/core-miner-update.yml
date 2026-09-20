@@ -34,14 +34,14 @@ jobs:
       - name: Verify and apply staged source changes
         shell: python
         run: |
-          import pathlib, json, zlib, base64, hashlib, subprocess
-          assert '${{ github.ref_name }}' == 'update/core-miner-0.2.1-beta'
+          import os, pathlib, json, zlib, base64, hashlib, subprocess
+          assert os.environ['GITHUB_REF_NAME'] == 'update/core-miner-0.2.1-beta'
           p = pathlib.Path('package.json')
           version = json.loads(p.read_text())['version']
           if version == '0.1.0-beta.1':
               patch = zlib.decompress(base64.b64decode(pathlib.Path('build/update-021.patch.zlib.b64').read_text().strip(), validate=True))
               assert hashlib.sha256(patch).hexdigest() == '8f5bae6177401f0bd08aae5171699d95ee0203954bbbc4951d9ac0c0590948d9', 'Source transfer hash mismatch'
-              target = pathlib.Path('${{ runner.temp }}') / 'core-update.patch'
+              target = pathlib.Path(os.environ['RUNNER_TEMP']) / 'core-update.patch'
               target.write_bytes(patch)
               subprocess.run(['git','apply','--unidiff-zero','--ignore-space-change','--check',str(target)], check=True)
               subprocess.run(['git','apply','--unidiff-zero','--ignore-space-change',str(target)], check=True)
