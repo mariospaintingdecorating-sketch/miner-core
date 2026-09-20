@@ -21,9 +21,9 @@ for entry in manifest:
     p = pathlib.PurePosixPath(entry['path'])
     assert not p.is_absolute() and '..' not in p.parts and not p.parts[0] in ('.git', '.github'), entry['path']
     if entry['path'] == 'build/verify-release-021.cjs':
-        # Vite may represent 145000 as 145e3. Only the verifier regex changes.
+        # Verifier-only corrections: minified numeric notation and Windows paths.
         entry['transportNew'] = entry['new']
-        entry['new'] = '9c434ca33fa6f40d6261b83ffe5227e542af20f02fd95d715c2023b79415c083'
+        entry['new'] = '9c2e1c7d42c50dd295e7a91444943a576276c833786caea5cf69fbe402642da0'
 
 def digest(path):
     p = ROOT / path
@@ -39,8 +39,10 @@ else:
     verifier = ROOT / 'build/verify-release-021.cjs'
     text = verifier.read_text(encoding='utf-8')
     old = r'/minimumStartWindowMs\s*:\s*145000/'
-    assert old in text
-    verifier.write_bytes(text.replace(old, r'/minimumStartWindowMs\s*:\s*(?:145000|145e3)/').encode('utf-8'))
+    assert old in text and 'asar.extractFile(archive, name)' in text
+    text = text.replace(old, r'/minimumStartWindowMs\s*:\s*(?:145000|145e3)/')
+    text = text.replace('asar.extractFile(archive, name)', 'asar.extractFile(archive, path.normalize(name))')
+    verifier.write_bytes(text.encode('utf-8'))
     for entry in manifest:
         assert digest(entry['path']) == entry['new'], f"Patched bytes mismatch: {entry['path']}"
 
@@ -53,7 +55,7 @@ out.mkdir(exist_ok=True)
     'patchPayloadSha256': EXPECTED,
     'materializedFiles': len(manifest),
     'transportIsSourceDiffOnly': True,
-    'verifierFormatCorrection': 'Accept equivalent Vite 145e3 numeric representation',
+    'verifierCorrections': ['Accept equivalent Vite 145e3 numeric representation', 'Normalize ASAR read paths using the host platform separator'],
     'userWalletDataIncluded': False,
 }, indent=2), encoding='utf-8')
 print('All 35 release source files passed before/after verification.')
