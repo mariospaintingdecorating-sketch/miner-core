@@ -19,52 +19,37 @@ jobs:
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
-      - name: Verify exact source repair before committing isolated branch
+      - name: Verify committed source and apply exact reviewed corrections
         shell: python
         run: |
-          import os, pathlib, json, base64, zlib, hashlib, subprocess
+          import os, pathlib, json, hashlib, subprocess
           assert os.environ['GITHUB_REF_NAME'] == 'fix/core-miner-0.2.3-address'
-          root=pathlib.Path('.'); out=pathlib.Path(os.environ['RUNNER_TEMP'])
-          transfer=root/'build/address-023-transfer.b64'
+          assert json.loads(pathlib.Path('package.json').read_text())['version']=='0.2.3-beta'
+          transfer=pathlib.Path('build/address-review.json')
           if transfer.exists():
-              encoded=transfer.read_text().strip()
-              (out/'transfer-received.b64').write_text(encoded)
-              # Correct a known transcription insertion; the full source digest
-              # and every before/after file hash must still match the review.
-              encoded=encoded.replace('xZZrmAAN7','xZrmAAN7')
-              raw=zlib.decompress(base64.b64decode(encoded,validate=True))
-              assert hashlib.sha256(raw).hexdigest() == '13a76ff04f26a72ce7bf4c62a40b40d9f85bbecd70e49d087acd4b3724a521e9', 'Source transfer digest mismatch'
-              document=json.loads(raw); assert document['format']==1
-              subprocess.run(['git','merge-base','--is-ancestor',document['base'],'HEAD'],check=True)
+              document=json.loads(transfer.read_text(encoding='utf-8')); assert document['format']==1
               updates=[]
               for change in document['changes']:
                   p=pathlib.Path(change['path'])
                   assert not p.is_absolute() and '..' not in p.parts and '.git' not in p.parts
-                  previous=p.read_text(encoding='utf-8').replace('\r\n','\n') if p.exists() else None
-                  actual=hashlib.sha256(previous.encode()).hexdigest() if previous is not None else None
-                  assert actual==change['before'], 'Unexpected base content: '+str(p)
-                  lines=(previous or '').splitlines(keepends=True)
-                  for edit in reversed(change['edits']):
-                      lines[edit['start']:edit['start']+edit['delete']]=edit['insert']
-                  result=''.join(lines)
-                  assert hashlib.sha256(result.encode()).hexdigest()==change['after'], 'Result digest mismatch: '+str(p)
-                  updates.append((p,result))
-              for p,result in updates:
-                  p.parent.mkdir(parents=True,exist_ok=True); p.write_bytes(result.encode('utf-8'))
+                  text=p.read_text(encoding='utf-8')
+                  assert hashlib.sha256(text.encode()).hexdigest()==change['before'], 'Unexpected source: '+str(p)
+                  for before,after in change['replace']:
+                      assert text.count(before)==1, 'Replacement is not unique: '+str(p)
+                      text=text.replace(before,after)
+                  assert hashlib.sha256(text.encode()).hexdigest()==change['after'], 'Result digest mismatch: '+str(p)
+                  updates.append((p,text))
+              for p,text in updates: p.write_bytes(text.encode())
               transfer.unlink()
               subprocess.run(['git','config','user.name','github-actions[bot]'],check=True)
               subprocess.run(['git','config','user.email','41898282+github-actions[bot]@users.noreply.github.com'],check=True)
               subprocess.run(['git','add','--']+[str(p) for p,_ in updates]+[str(transfer)],check=True)
-              subprocess.run(['git','commit','-m','fix: separate ABI addresses from DApp routing and preserve wallet authorization [skip ci]'],check=True)
+              subprocess.run(['git','commit','-m','fix: apply reviewed address-build corrections [skip ci]'],check=True)
               subprocess.run(['git','push','origin','HEAD:refs/heads/fix/core-miner-0.2.3-address'],check=True)
-              (out/'source-transfer-verification.json').write_text(json.dumps({'passed':True,'files':len(updates),'sha256':hashlib.sha256(raw).hexdigest()},indent=2))
-          assert json.loads((root/'package.json').read_text())['version']=='0.2.3-beta'
-          (out/'core-miner-source-commit.txt').write_text(subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip())
+          pathlib.Path(os.environ['RUNNER_TEMP'],'core-miner-source-commit.txt').write_text(subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip())
       - name: Install locked dependencies with unchanged mining module
         run: |
           $hash=(Get-FileHash 'vendor/msii-bee-miner-5.1.1-core.1.tgz' -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -110,7 +95,7 @@ jobs:
           $out='${{ runner.temp }}/core-miner-023-result'
           New-Item -ItemType Directory -Force $out | Out-Null
           git archive --format=zip --output="$out/Core-Miner-0.2.3-source.zip" HEAD
-          foreach ($name in @('core-miner-023-tests.json','core-miner-source-commit.txt','source-transfer-verification.json','transfer-received.b64')) { Copy-Item "${{ runner.temp }}/$name" "$out/" -ErrorAction SilentlyContinue }
+          foreach ($name in @('core-miner-023-tests.json','core-miner-source-commit.txt','source-transfer-verification.json')) { Copy-Item "${{ runner.temp }}/$name" "$out/" -ErrorAction SilentlyContinue }
           foreach ($pattern in @('*.exe','*verification.json','*audit.json','*SHA256.txt')) { Copy-Item "release/$pattern" "$out/" -ErrorAction SilentlyContinue }
           Copy-Item 'docs/UPDATE-0.2.3.md' "$out/" -ErrorAction SilentlyContinue
           exit 0
