@@ -1,4 +1,4 @@
-import { mobileContractAddress } from '../../shared/chainIdentity';
+import { mobileAbiAddress } from '../../shared/chainIdentity';
 import { Wallet } from '@teamgosh/bee-sdk';
 import type { MamaBoardLevelSource } from '../../shared/wallets';
 import type {
@@ -59,8 +59,8 @@ export class BeeWalletBalanceSource implements MamaBoardLevelSource {
       const native = new Wallet([...endpoints], null, apiUrl, appId);
       return {
         free: () => native.free(),
-        get_multifactor_balances: (input) => native.get_multifactor_balances({ multifactor_address: mobileContractAddress(input.multifactor_address) }),
-        get_miner_address: (input) => native.get_miner_address({ multifactor_address: mobileContractAddress(input.multifactor_address) }),
+        get_multifactor_balances: (input) => native.get_multifactor_balances({ multifactor_address: mobileAbiAddress(input.multifactor_address) }),
+        get_miner_address: (input) => native.get_miner_address({ multifactor_address: mobileAbiAddress(input.multifactor_address) }),
       };
     },
     private readonly readContract: MamaBoardContractReader =

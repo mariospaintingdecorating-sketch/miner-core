@@ -16,6 +16,8 @@ const LANGUAGE_STORAGE_KEY = 'miner-core.ui-language';
 
 const messages: Readonly<Record<Exclude<UiLanguage, 'en'>, Readonly<Record<string, string>>>> = {
   pl: {
+    'Waiting for on-chain key confirmation': 'Oczekiwanie na potwierdzenie klucza w blockchainie',
+    'The SDK rejected the address format. This is an application error, not a wallet rejection. Keep this wallet and its key.': 'SDK odrzucił format adresu. To błąd aplikacji, a nie odmowa portfela. Zachowaj ten portfel i jego klucz.', 
     "Account name → QR → approve in AN Wallet. Mining keys are handled automatically.": "Nazwa konta → QR → zatwierdzenie w AN Wallet. Klucze miningowe obsługiwane są automatycznie.",
     "AN Wallet account name": "Nazwa konta AN Wallet",
     "Exact account name in AN Wallet": "Dokładna nazwa konta w AN Wallet",
@@ -423,6 +425,8 @@ const messages: Readonly<Record<Exclude<UiLanguage, 'en'>, Readonly<Record<strin
     'propagating-mining-key': 'propagacja klucza miningowego',
   },
   ru: {
+    'Waiting for on-chain key confirmation': 'Ожидание подтверждения ключа в блокчейне',
+    'The SDK rejected the address format. This is an application error, not a wallet rejection. Keep this wallet and its key.': 'SDK отклонил формат адреса. Это ошибка приложения, а не отказ кошелька. Сохраните кошелёк и ключ.', 
     'Dashboard': 'Панель',
     'Wallets': 'Кошельки',
     'Mining': 'Майнинг',

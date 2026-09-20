@@ -5,7 +5,7 @@ import {
   get_miner_address_by_wallet_name,
 } from '@teamgosh/bee-sdk';
 import { createQueueAwareMiner } from './QueueAwareMinerSdk';
-import { mobileContractAddress } from '../../shared/chainIdentity';
+import { mobileAbiAddress } from '../../shared/chainIdentity';
 import type { BeeSdkOwnedResource } from './contracts';
 
 export interface BeeNativeSharedKeySession extends BeeSdkOwnedResource {
@@ -141,7 +141,7 @@ export class TeamGoshBeeNativeSdk implements BeeNativeSdkFactory {
   ): Promise<void> {
     return ensure_mining_keys_propagated({
       client_config: { network: { endpoints: [...endpoints] } },
-      miner_address: mobileContractAddress(minerAddress),
+      miner_address: mobileAbiAddress(minerAddress),
       app_id: appId,
       expected_owner_public: expectedOwnerPublic,
       max_attempts: maxAttempts,

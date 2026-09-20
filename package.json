@@ -1,7 +1,7 @@
 {
   "name": "miner-core",
   "productName": "Core Miner",
-  "version": "0.2.2-beta",
+  "version": "0.2.3-beta",
   "private": true,
   "description": "Core Miner desktop mining operator application",
   "author": { "name": "MSII" },
@@ -50,7 +50,7 @@
   "build": {
     "appId": "com.msii.miner-core",
     "productName": "Core Miner",
-    "artifactName": "Core Miner 0.2.2 beta setup.${ext}",
+    "artifactName": "Core Miner 0.2.3 beta setup.${ext}",
     "asar": true,
     "asarUnpack": ["node_modules/@eversdk/lib-node/**/*.node"],
     "directories": { "output": "release" },

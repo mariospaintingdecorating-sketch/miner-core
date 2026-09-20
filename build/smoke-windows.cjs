@@ -115,7 +115,7 @@ let child, socket;
 })().catch((error) => { report.passed = false; report.error = String(error.stack || error); process.exitCode = 1; }).finally(() => {
   socket?.close();
   if (child && child.exitCode === null) cp.spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
-  fs.writeFileSync('release/Core-Miner-0.2.2-windows-smoke-verification.json', JSON.stringify(report, null, 2));
+  fs.writeFileSync('release/Core-Miner-0.2.3-windows-smoke-verification.json', JSON.stringify(report, null, 2));
   const { screenshotPngBase64, ...printable } = report;
   console.log(JSON.stringify(printable, null, 2));
 });

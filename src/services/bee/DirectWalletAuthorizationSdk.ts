@@ -1,5 +1,5 @@
 import { gen_mining_keys, get_miner_address_by_wallet_name, ensure_mining_keys_propagated, Wallet } from '@teamgosh/bee-sdk';
-import { mobileContractAddress } from '../../shared/chainIdentity';
+import { mobileContractAddress, mobileAbiAddress } from '../../shared/chainIdentity';
 import type { BeeSdkOwnedResource } from './contracts';
 
 export interface MiningAuthorizationKeys extends BeeSdkOwnedResource {
@@ -23,7 +23,7 @@ export class TeamGoshDirectWalletAuthorizationSdk implements DirectWalletAuthori
       try { walletAddress = mobileContractAddress(details.address); }
       finally { details.free(); }
       let minerAddress: string;
-      try { minerAddress = await wallet.get_miner_address({ multifactor_address: walletAddress }); }
+      try { minerAddress = await wallet.get_miner_address({ multifactor_address: mobileAbiAddress(walletAddress) }); }
       catch { minerAddress = await get_miner_address_by_wallet_name({ client_config: { network: { endpoints: [...endpoints], query_timeout: 8_000 } }, wallet_name: walletName }); }
       return Object.freeze({ walletAddress, minerAddress: mobileContractAddress(minerAddress) });
     } finally { wallet.free(); }
@@ -31,7 +31,7 @@ export class TeamGoshDirectWalletAuthorizationSdk implements DirectWalletAuthori
   verify(endpoints: readonly string[], appId: string, minerAddress: string, publicKey: string): Promise<void> {
     return ensure_mining_keys_propagated({
       client_config: { network: { endpoints: [...endpoints], query_timeout: 8_000 } },
-      miner_address: mobileContractAddress(minerAddress), app_id: appId,
+      miner_address: mobileAbiAddress(minerAddress), app_id: appId,
       expected_owner_public: publicKey, max_attempts: 1, interval_ms: 1_000,
     });
   }
@@ -45,6 +45,18 @@ export function walletLookupEndpointGroups(endpoints: readonly string[]): readon
     groups.push(['https://shellnet.ackinacki.org']);
     const fallback = ['https://mainnet-cf.ackinacki.org'];
     if (!hosts.includes('mainnet-cf.ackinacki.org')) groups.push(fallback);
+  }
+  return groups;
+}
+
+/** Same-chain read fallback only. Custom networks never cross to mainnet. */
+export function miningVerificationEndpointGroups(endpoints: readonly string[]): readonly (readonly string[])[] {
+  const groups: string[][] = [[...endpoints]];
+  const hosts = endpoints.map(value => new URL(value).hostname);
+  if (hosts.length && hosts.every(host => host === 'mainnet.ackinacki.org' || host === 'mainnet-cf.ackinacki.org')) {
+    for (const host of ['mainnet-cf.ackinacki.org', 'mainnet.ackinacki.org']) {
+      if (!hosts.includes(host)) groups.push([`https://${host}`]);
+    }
   }
   return groups;
 }

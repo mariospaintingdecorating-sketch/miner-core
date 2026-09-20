@@ -1,5 +1,5 @@
 import initializeBeeSdk, { Miner } from '@msii/bee-miner';
-import { mobileContractAddress } from '../../shared/chainIdentity';
+import { mobileAbiAddress } from '../../shared/chainIdentity';
 import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
@@ -56,7 +56,7 @@ async function handleRequest(value: unknown): Promise<BeeMiningUtilityResponse> 
         const miner = await Miner.new(
           [...creation.endpoints],
           creation.appId,
-          mobileContractAddress(creation.minerAddress),
+          mobileAbiAddress(creation.minerAddress),
           creation.publicKey,
           creation.secretKey,
         );

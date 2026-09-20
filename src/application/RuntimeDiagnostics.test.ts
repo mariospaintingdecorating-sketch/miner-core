@@ -826,3 +826,12 @@ function workerDiagnosticPayload(
     ...patch,
   };
 }
+
+describe('wallet observation pause is not a connection error',()=>{
+  it('records user pause informationally while retaining its actual reason',()=>{
+    const bus=new CoreEventEmitter();const diagnostics=new RuntimeDiagnostics(bus);
+    bus.publish({id:'paused-test',occurredAt:'2026-09-20T20:00:00Z',type:'bee-wallet-connection-failed',payload:{state:'failed',walletName:'synthetic',walletAddress:null,code:'bee-wallet-authorization-cancelled',message:'Verification paused.'}});
+    expect(diagnostics.entries()[0]).toMatchObject({level:'info',title:'wallet verification paused',code:'bee-wallet-authorization-cancelled'});
+    expect(diagnostics.latestError()).toBeNull();
+  });
+});

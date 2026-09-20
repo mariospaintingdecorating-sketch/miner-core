@@ -39,7 +39,7 @@ export function WalletApprovalPanel({
       </div>
       <div className="wallet-approval-copy">
         <span className="eyebrow">{t(direct ? 'Mining-key authorization' : 'Wallet approval')}</span>
-        <h4>{t('Waiting for wallet approval')}</h4>
+        <h4>{t(direct ? 'Waiting for on-chain key confirmation' : 'Waiting for wallet approval')}</h4>
         <p>
           {t(direct ? 'Select the named account in AN Wallet, scan this QR and approve the mining key. Nothing needs to be copied by hand.' : 'Scan the QR code with Acki Nacki Wallet on your phone, or open the registered wallet application on this computer.')}
         </p>

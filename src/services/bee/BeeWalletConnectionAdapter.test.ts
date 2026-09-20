@@ -92,7 +92,8 @@ describe('Direct wallet mining-key authorization',()=>{
     const r=await f.adapter.beginConnection({walletName:'alpha'});const waiter=f.adapter.awaitConnection(r.reference);
     expect(f.adapter.awaitConnection(r.reference)).toBe(waiter);
     const rejection=expect(waiter).rejects.toThrow();await vi.advanceTimersByTimeAsync(180_001);await rejection;
-    expect(f.sdk.verify).toHaveBeenCalledOnce();
+    expect(f.sdk.verify).toHaveBeenCalledTimes(2); // At most one hung read per official endpoint.
+    expect(f.sdk.verify.mock.calls.map(call => call[0])).toEqual([endpoints, ['https://mainnet-cf.ackinacki.org']]);
   });
   it('refuses to silently change the account or DApp of a saved request',async()=>{
     const f=fixture();const r=await f.adapter.beginConnection({walletName:'alpha'});const before=f.values.get(r.reference);
@@ -143,5 +144,50 @@ describe('Direct wallet mining-key authorization',()=>{
     vi.useFakeTimers();const late=deferred<{free:()=>void}>();const free=vi.fn();
     const read=authorizationRead(late.promise,Date.now()+100,undefined,v=>v.free());const rejection=expect(read).rejects.toThrow('timed out');
     await vi.advanceTimersByTimeAsync(101);await rejection;late.resolve({free});await Promise.resolve();expect(free).toHaveBeenCalledOnce();
+  });
+});
+
+describe('address repair and read failure regression',()=>{
+  it('stops on SDK address encoding errors instead of polling and asking for more approval',async()=>{
+    const f=fixture();f.sdk.verify.mockRejectedValue(new Error('Encode message: Invalid address [Invalid argument: 0]: private_payload'));
+    const r=await f.adapter.beginConnection({walletName:'alpha'});
+    await expect(f.adapter.awaitConnection(r.reference)).rejects.toMatchObject({code:'bee-wallet-sdk-address-invalid'});
+    expect(f.sdk.verify).toHaveBeenCalledOnce();
+    expect((await f.adapter.connectionState(r.reference)).failure?.code).toBe('bee-wallet-sdk-address-invalid');
+    expect(JSON.stringify(f.events)).not.toContain('private_payload');
+    await expect(f.adapter.prepareMiningCredential(r.reference)).rejects.toThrow();
+  });
+  it('fails over a 502 verification read to the other mining endpoint, never to Shellnet',async()=>{
+    const f=fixture();f.sdk.verify.mockRejectedValueOnce(new Error('Invalid server response: 502 Bad Gateway'));
+    const r=await f.adapter.beginConnection({walletName:'alpha'});
+    await f.adapter.awaitConnection(r.reference);
+    expect(f.sdk.verify.mock.calls[0]?.[0]).toEqual(endpoints);
+    expect(f.sdk.verify.mock.calls[1]?.[0]).toEqual(['https://mainnet-cf.ackinacki.org']);
+    expect(f.sdk.generate).toHaveBeenCalledOnce();
+    expect((await f.adapter.prepareMiningCredential(r.reference)).credentialReference).toBe('credential:2');
+  });
+  it('keeps a specific sanitized network failure after the absolute deadline',async()=>{
+    vi.useFakeTimers();const f=fixture();f.sdk.verify.mockRejectedValue(new Error('502 Bad Gateway secret='+SECRET));
+    const r=await f.adapter.beginConnection({walletName:'alpha'});
+    const rejection=expect(f.adapter.awaitConnection(r.reference)).rejects.toMatchObject({code:'bee-wallet-network-read-failed'});
+    await vi.advanceTimersByTimeAsync(180_001); await rejection;
+    expect((await f.adapter.connectionState(r.reference)).failure?.message).not.toContain(SECRET);
+    expect(JSON.stringify(f.events)).not.toContain(SECRET);
+    expect(JSON.parse(f.values.get(r.reference)!).secretKey).toBe(SECRET);
+  });
+  it('a previously saved request resumes with the exact key then waits for successful verification before commit',async()=>{
+    const f=fixture();const r=await f.adapter.beginConnection({walletName:'alpha'});
+    const approve=deferred<void>();f.sdk.verify.mockImplementationOnce(()=>approve.promise);
+    const restarted=new BeeWalletConnectionAdapter(f.gateway,f.storage,config,f.sdk);
+    const same=await restarted.beginConnection({walletName:'alpha',resumeReference:r.reference});
+    const wait=restarted.awaitConnection(same.reference);
+    await vi.waitFor(()=>expect(f.sdk.verify).toHaveBeenCalledOnce());
+    await expect(restarted.prepareMiningCredential(r.reference)).rejects.toThrow('verified');
+    expect(f.values.has('credential:2')).toBe(false);
+    approve.resolve(); await wait;
+    const prepared=await restarted.prepareMiningCredential(r.reference);
+    await restarted.verifyMiningCredentialPropagation(r.reference,prepared.credentialReference);
+    expect(same.deepLink).toBe(r.deepLink);expect(f.sdk.generate).toHaveBeenCalledOnce();
+    expect(parseStoredBeeMiningCredential(f.values.get(prepared.credentialReference)!)).toMatchObject({publicKey:PUB,secretKey:SECRET,minerAddress});
   });
 });

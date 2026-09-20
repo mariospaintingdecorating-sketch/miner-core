@@ -2,8 +2,8 @@ import { miningAuthorizationContext, mobileContractAddress, sameWalletAddress } 
 import { CoreEventEmitter, type CoreEvent, type EventPublisher } from '../../shared/events';
 import type { SecureReferenceStorageContract } from '../../storage/contracts';
 import type { BeeConnectedWallet, BeeConnectionReference, BeeCredentialReference, BeePreparedMiningCredential, BeeSdkFailure, BeeSdkGatewayContract, BeeSdkResourceOwner, BeeWalletConnectionCapability, BeeWalletConnectionInput, BeeWalletConnectionRequest, BeeWalletConnectionState } from './contracts';
-import { TeamGoshDirectWalletAuthorizationSdk, walletLookupEndpointGroups, type DirectWalletAuthorizationSdk, type WalletAuthorizationIdentity } from './DirectWalletAuthorizationSdk';
-import { assertAuthorizationActive, authorizationDelay, authorizationRead, WalletAuthorizationError } from './WalletAuthorizationRead';
+import { TeamGoshDirectWalletAuthorizationSdk, walletLookupEndpointGroups, miningVerificationEndpointGroups, type DirectWalletAuthorizationSdk, type WalletAuthorizationIdentity } from './DirectWalletAuthorizationSdk';
+import { assertAuthorizationActive, authorizationDelay, authorizationRead, WalletAuthorizationError, safeAuthorizationFailure } from './WalletAuthorizationRead';
 
 export interface BeeWalletConnectionConfiguration {
   readonly endpoints: readonly string[];
@@ -60,9 +60,8 @@ function normalizeName(value: string): string {
   return name;
 }
 function failureFor(error: unknown, fallback = 'bee-wallet-authorization-pending'): Readonly<BeeSdkFailure> {
-  if (error instanceof WalletAuthorizationError) return Object.freeze({ code: error.code, message: error.message });
-  // Never serialize SDK exceptions: they can contain URLs, signatures or credentials.
-  return Object.freeze({ code: fallback, message: 'The account or mining-key approval is not confirmed yet. Check the account selected in AN Wallet and retry the same request.' });
+  const failure = safeAuthorizationFailure(error, fallback);
+  return Object.freeze({ code: failure.code, message: failure.message });
 }
 function validateKeys(publicKey: string, secretKey: string, deepLink: string, appId: string): void {
   if (!/^[a-f0-9]{64}$/i.test(publicKey) || !/^[a-f0-9]{64}$/i.test(secretKey)) throw new Error('Invalid mining-key encoding.');
@@ -166,13 +165,14 @@ export class BeeWalletConnectionAdapter implements BeeWalletConnectionCapability
               assertAuthorizationActive(signal);
               if (error instanceof WalletAuthorizationError && error.code === 'bee-wallet-address-mismatch') throw error;
               lastFailure = failureFor(error, 'bee-wallet-account-read-failed');
+              if (lastFailure.code === 'bee-wallet-sdk-address-invalid') throw new WalletAuthorizationError(lastFailure.code, lastFailure.message);
             }
           }
         }
         if (identity && this.now() < deadline) {
           try {
             // Discovery elsewhere is not authorization. Only mining endpoints may verify this key.
-            await this.#read(`verify:${reference}:${state.publicKey}`, () => this.sdk.verify(this.configuration.endpoints, state.appId, identity!.minerAddress, state.publicKey), deadline, signal);
+            await this.#verify(reference, state.appId, identity!.minerAddress, state.publicKey, deadline, signal);
             assertAuthorizationActive(signal);
             const latest = await this.#direct(reference);
             if (latest.publicKey !== state.publicKey || latest.approvalDeadlineMs !== deadline) throw new WalletAuthorizationError('bee-wallet-operation-stale', 'A newer request replaced this verification.');
@@ -187,11 +187,12 @@ export class BeeWalletConnectionAdapter implements BeeWalletConnectionCapability
             assertAuthorizationActive(signal);
             if (error instanceof WalletAuthorizationError && ['bee-wallet-operation-stale','bee-wallet-secure-save-failed'].includes(error.code)) throw error;
             lastFailure = failureFor(error);
+            if (lastFailure.code === 'bee-wallet-sdk-address-invalid') throw new WalletAuthorizationError(lastFailure.code, lastFailure.message);
           }
         }
         if (this.now() < deadline) await authorizationDelay(Math.min(POLL_MS, deadline - this.now()), signal);
       }
-      throw new WalletAuthorizationError(lastFailure.code === 'bee-wallet-read-timeout' ? lastFailure.code : 'bee-wallet-authorization-pending', 'Automatic checking ended without confirmation. Keep the same QR, approve it in the named AN Wallet account, then resume verification.');
+      throw new WalletAuthorizationError(lastFailure.code, `Automatic checking ended without confirmation. ${lastFailure.message} Resume verification with the same QR; do not reset the wallet.`);
     } catch (error) {
       const current = await this.#load(reference).catch(() => null);
       const failure = failureFor(error);
@@ -230,7 +231,7 @@ export class BeeWalletConnectionAdapter implements BeeWalletConnectionCapability
       const freshlyVerified = state.version === 2 && state.status === 'connected' && state.verifiedAt !== null && this.now() - state.verifiedAt >= 0 && this.now() - state.verifiedAt < 15_000;
       if (!freshlyVerified) {
         await this.gateway.initialize();
-        await this.#read(`verify:${reference}:${credential.publicKey}`, () => this.sdk.verify(this.configuration.endpoints, this.configuration.appId, credential.minerAddress, credential.publicKey), this.now() + SINGLE_READ_MS);
+        await this.#verify(reference, this.configuration.appId, credential.minerAddress, credential.publicKey, this.now() + SINGLE_READ_MS * 2);
       }
       const current = await this.#load(reference);
       if (!current || current.credentialReference !== credentialReference || await this.storage.loadSecureValue(credentialReference) !== serialized) throw new Error('Credential changed during verification. No record was overwritten.');
@@ -274,6 +275,29 @@ export class BeeWalletConnectionAdapter implements BeeWalletConnectionCapability
     // A timed-out SDK read remains single-flight; retry never spawns a parallel copy.
     return authorizationRead(pending, Math.min(deadline, this.now() + SINGLE_READ_MS), signal, undefined, this.now);
   }
+  async #verify(reference: string, appId: string, minerAddress: string, publicKey: string,
+    deadline: number, signal?: AbortSignal): Promise<void> {
+    const groups = miningVerificationEndpointGroups(this.configuration.endpoints);
+    let lastError: unknown;
+    for (let index = 0; index < groups.length; index++) {
+      assertAuthorizationActive(signal);
+      const endpoints = groups[index];
+      try {
+        await this.#read(`verify:${reference}:${publicKey}:${JSON.stringify(endpoints)}`,
+          () => this.sdk.verify(endpoints, appId, minerAddress, publicKey), deadline, signal);
+        return;
+      } catch (error) {
+        assertAuthorizationActive(signal);
+        lastError = error;
+        const code = safeAuthorizationFailure(error).code;
+        // Fail over only public reads after transport failures. Not after a
+        // real negative key observation or an invalid address. Never Shellnet.
+        if (!['bee-wallet-network-read-failed', 'bee-wallet-read-timeout'].includes(code) || this.now() >= deadline) throw error;
+      }
+    }
+    throw lastError;
+  }
+
   async #direct(reference: string): Promise<DirectConnection> {
     const state = await this.#load(reference);
     if (state?.version !== 2 || state.authorizationContext !== miningAuthorizationContext(this.configuration)) throw new Error('The request is missing or belongs to a different application context.');

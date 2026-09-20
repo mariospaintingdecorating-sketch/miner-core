@@ -588,6 +588,7 @@ function authorizationMessage(wallet: WalletPresentation, t: Translate): string 
   if (wallet.connection.miningReady) return t('The mining key is confirmed on-chain. Ready for mining.');
   if (wallet.connection.operationPending) return t('Approve the QR in the named AN Wallet account. Confirmation is checked automatically.');
   const code = wallet.connection.lastFailureCode ?? '';
+  if (code.includes('sdk-address-invalid')) return t('The SDK rejected the address format. This is an application error, not a wallet rejection. Keep this wallet and its key.');
   if (code.includes('address-mismatch') || code.includes('already-registered')) return t('The account does not match this profile, or it is already registered. No existing key was replaced.');
   if (code.includes('context-mismatch')) return t('The saved request belongs to another account or application. Its key was not replaced.');
   if (code.includes('account-name-invalid')) return t('Enter the exact existing account name from AN Wallet.');

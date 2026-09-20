@@ -220,11 +220,11 @@ export class RuntimeDiagnostics implements RuntimeDiagnosticsSource {
     ) {
       return createDiagnostic(
         event,
-        event.type === 'bee-wallet-connection-failed' ? 'error' : 'info',
+        event.type === 'bee-wallet-connection-failed' && event.payload.code !== 'bee-wallet-authorization-cancelled' ? 'error' : 'info',
         'WALLET',
         {
           ...identity,
-          title: event.type.replaceAll('-', ' '),
+          title: event.payload.code === 'bee-wallet-authorization-cancelled' ? 'wallet verification paused' : event.type.replaceAll('-', ' '),
           detail: event.payload.walletName
             ? `Wallet ${event.payload.walletName} · ${event.payload.state}`
             : `Wallet connection · ${event.payload.state}`,

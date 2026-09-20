@@ -16,6 +16,16 @@ export function mobileContractAddress(value: string): string {
   return `${identity.dappId}::${identity.accountId}`;
 }
 
+/**
+ * Bee/Kit 6.1 routes by dApp separately. Its ABI address parameters must still
+ * be raw workchain addresses (0:<64hex>), never the network's scoped spelling.
+ * Validate the partition before conversion; do not discard an arbitrary dApp.
+ */
+export function mobileAbiAddress(value: string): string {
+  const scoped = mobileContractAddress(value);
+  return `0:${contractIdentity(scoped).accountId}`;
+}
+
 export function sameWalletAddress(left: string, right: string): boolean {
   if (left === right) return true;
   try { return mobileContractAddress(left) === mobileContractAddress(right); } catch { return false; }
