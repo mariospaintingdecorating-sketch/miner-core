@@ -578,6 +578,12 @@ function formatRewardTime(value: string, language: UiLanguage): string {
       ).format(date);
 }
 
+function connectionSetupLabel(wallet: WalletPresentation, t: Translate): string {
+  if (wallet.connection.miningReady) return t('Ready for mining');
+  if (wallet.connection.operationPending) return t('Mining key pending');
+  return t(wallet.connection.phase === 'failed' ? 'Needs attention' : 'Not connected');
+}
+
 function authorizationMessage(wallet: WalletPresentation, t: Translate): string {
   if (wallet.connection.miningReady) return t('The mining key is confirmed on-chain. Ready for mining.');
   if (wallet.connection.operationPending) return t('Approve the QR in the named AN Wallet account. Confirmation is checked automatically.');
