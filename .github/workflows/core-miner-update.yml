@@ -1,0 +1,68 @@
+name: Core Miner 0.2.1 update checks
+
+on:
+  push:
+    branches: ["update/core-miner-0.2.1-beta"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: core-miner-021-update
+  cancel-in-progress: false
+
+jobs:
+  windows-baseline:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout isolated update branch
+        uses: actions/checkout@v4
+      - name: Use Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Record source and verify supplied SDK identity
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP 'core-miner-021-review'
+          New-Item -ItemType Directory -Force $out | Out-Null
+          git archive --format=zip --output="$out/source-snapshot.zip" HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'Source archive failed' }
+          git rev-parse HEAD | Out-File "$out/source-commit.txt" -Encoding utf8
+          node --version | Out-File "$out/node-version.txt" -Encoding utf8
+          npm view '@teamgosh/bee-sdk' dist-tags --json | Out-File "$out/sdk-dist-tags.json" -Encoding utf8
+          if ($LASTEXITCODE -ne 0) { throw 'SDK metadata lookup failed' }
+          npm view '@teamgosh/bee-sdk@5.1.1' --json | Out-File "$out/sdk-package-metadata.json" -Encoding utf8
+          if ($LASTEXITCODE -ne 0) { throw 'SDK version metadata lookup failed' }
+          npm pack '@teamgosh/bee-sdk@5.1.1' --pack-destination "$out" --ignore-scripts
+          if ($LASTEXITCODE -ne 0) { throw 'SDK package download failed' }
+          $actual = (Get-FileHash "$out/teamgosh-bee-sdk-5.1.1.tgz" -Algorithm SHA256).Hash.ToLowerInvariant()
+          $expected = '4846e07daf69c8d91aa54669e9956bd0cde725160d0d6cf021239fb28c1dac0e'
+          "$actual  teamgosh-bee-sdk-5.1.1.tgz" | Out-File "$out/sdk-SHA256.txt" -Encoding utf8
+          if ($actual -ne $expected) { throw 'Registry package does not match the supplied SDK; do not substitute automatically.' }
+      - name: Save source and SDK verification artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-miner-021-source-and-sdk
+          path: ${{ runner.temp }}/core-miner-021-review/
+          retention-days: 14
+          if-no-files-found: error
+      - name: Install locked baseline dependencies
+        run: npm ci
+      - name: Typecheck baseline
+        run: npm run typecheck
+      - name: Run baseline test suite without wallets
+        run: npm test -- --reporter=default --reporter=json --outputFile="${{ runner.temp }}/core-miner-baseline-tests.json"
+      - name: Save baseline test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-miner-021-baseline-tests
+          path: ${{ runner.temp }}/core-miner-baseline-tests.json
+          retention-days: 14
+          if-no-files-found: warn
