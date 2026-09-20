@@ -65,7 +65,16 @@ export type BeeWalletConnectionStatus =
   | 'failed'
   | 'disconnected';
 
+export interface BeeWalletConnectionInput {
+  readonly walletName: string;
+  readonly resumeReference?: string | null;
+  readonly expectedWalletAddress?: string | null;
+  readonly signal?: AbortSignal;
+}
+
 export interface BeeWalletConnectionRequest {
+  readonly accountName?: string;
+  readonly kind?: 'mining-key';
   readonly reference: BeeConnectionReference;
   readonly deepLink: string;
   readonly expiresAt: number;
@@ -92,9 +101,11 @@ export interface BeeWalletConnectionState {
 
 /** Wallet approval operations only. Sensitive connection state stays internal. */
 export interface BeeWalletConnectionCapability {
-  beginConnection(): Promise<Readonly<BeeWalletConnectionRequest>>;
+  readonly flow?: 'direct-mining-key';
+  beginConnection(input?: BeeWalletConnectionInput): Promise<Readonly<BeeWalletConnectionRequest>>;
   awaitConnection(
     reference: BeeConnectionReference,
+    signal?: AbortSignal,
   ): Promise<Readonly<BeeConnectedWallet>>;
   prepareMiningCredential(
     reference: BeeConnectionReference,

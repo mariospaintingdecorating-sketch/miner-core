@@ -1,3 +1,5 @@
+import { assertAuthorizationActive, WalletAuthorizationError } from '../services/bee/WalletAuthorizationRead';
+import { sameWalletAddress } from '../shared/chainIdentity';
 import type { BeeWalletConnectionCapability } from '../services/bee/contracts';
 import type {
   WalletConnectionUpdate,
@@ -38,6 +40,7 @@ export interface WalletConnectionOperations {
   beginWalletConnection(
     walletId: string,
     selectedWalletId: string | null,
+    accountName?: string,
   ): Promise<Readonly<WalletConnectionCommandResult>>;
   prepareWalletMiningCredential(
     walletId: string,
@@ -81,12 +84,15 @@ interface WalletOperationOutcome {
 }
 
 interface WalletOperationRecord {
+  readonly controller?: AbortController;
+  committing?: boolean;
   readonly step: WalletConnectionOperationStep;
   readonly token: symbol;
   readonly promise: Promise<Readonly<WalletConnectionCommandResult>>;
 }
 
 interface WalletOperationContext {
+  readonly controller?: AbortController;
   readonly wallet: Readonly<WalletSnapshot>;
   readonly capability: BeeWalletConnectionCapability;
   readonly token: symbol;
@@ -151,7 +157,9 @@ export class WalletConnectionService implements WalletConnectionOperations {
   beginWalletConnection(
     walletId: string,
     selectedWalletId: string | null,
+    accountName?: string,
   ): Promise<Readonly<WalletConnectionCommandResult>> {
+    if (this.production?.capability?.flow === 'direct-mining-key') return this.#authorizeMiningKey(walletId, selectedWalletId, accountName);
     return this.#run({
       walletId,
       selectedWalletId,
@@ -278,10 +286,70 @@ export class WalletConnectionService implements WalletConnectionOperations {
     });
   }
 
+  #authorizeMiningKey(walletId: string, selectedWalletId: string | null, accountName?: string): Promise<Readonly<WalletConnectionCommandResult>> {
+    return this.#run({
+      walletId, selectedWalletId, step: 'authorize-mining-key',
+      failureReasonCode: 'wallet-approval-failed', failureCode: 'bee-wallet-authorization-failed',
+      failureMessage: 'Authorization is not confirmed. Resume verification with the same QR.',
+      execute: async ({ wallet, capability, token, controller }) => {
+        const signal = controller!.signal;
+        let request: Awaited<ReturnType<BeeWalletConnectionCapability['beginConnection']>> | null = null;
+        try {
+          const previous = wallet.connectionReference ? await capability.connectionState(wallet.connectionReference) : null;
+          this.#requireCurrent(walletId, token);
+          assertAuthorizationActive(signal);
+          request = await capability.beginConnection({
+            walletName: accountName ?? previous?.walletName ?? wallet.name,
+            resumeReference: wallet.connectionReference,
+            expectedWalletAddress: wallet.walletAddress,
+            signal,
+          });
+          this.#requireCurrent(walletId, token);
+          // Attach the durable pending reference even when Cancel arrived during its save.
+          // Existing mining keys remain referenced until the verified replacement commits.
+          await this.#commit(walletId, { walletAddress: wallet.walletAddress, onboardingStatus: 'awaiting-connection',
+            connectionReference: request.reference, miningCredentialReference: wallet.miningCredentialReference }, token);
+          this.#setMetadata(walletId, { connectionStateStored: true, lastFailureCode: null,
+            approval: { deepLink: request.deepLink, accountName: request.accountName, expiresAt: request.expiresAt, waiting: true, kind: 'mining-key' } });
+          this.#notify();
+          assertAuthorizationActive(signal);
+          const connected = await capability.awaitConnection(request.reference, signal);
+          this.#requireCurrent(walletId, token);
+          assertAuthorizationActive(signal);
+          const duplicate = this.walletRegistry.wallets().some(other => other.id !== walletId && other.walletAddress && sameWalletAddress(other.walletAddress, connected.walletAddress));
+          if (duplicate) throw new WalletAuthorizationError('bee-wallet-already-registered', 'This on-chain wallet is already registered. No duplicate miner was enabled.');
+          // Cancellation cannot interrupt the short, local commit after chain verification.
+          const operation = this.#operations.get(walletId)!;
+          operation.committing = true;
+          const prepared = await capability.prepareMiningCredential(request.reference);
+          this.#requireCurrent(walletId, token);
+          await capability.verifyMiningCredentialPropagation(request.reference, prepared.credentialReference);
+          this.#requireCurrent(walletId, token);
+          await this.#commit(walletId, { walletAddress: connected.walletAddress, onboardingStatus: 'ready',
+            connectionReference: request.reference, miningCredentialReference: prepared.credentialReference }, token);
+          this.#setMetadata(walletId, { connectionStateStored: true, miningCredentialStored: true, lastFailureCode: null, approval: null });
+          return { accepted: true, reasonCode: 'mining-credential-ready', message: 'Mining-key authorization was verified. The wallet is ready; mining was not started.' };
+        } catch (error) {
+          if (error instanceof WalletAuthorizationError) throw new WalletOperationFailure('wallet-approval-failed', error.code, error.message);
+          if (request) {
+            const code = await this.#connectionFailureCode(capability, request.reference, 'bee-wallet-authorization-failed');
+            throw new WalletOperationFailure('wallet-approval-failed', code, 'Authorization is not confirmed. Resume verification with the same QR.');
+          }
+          throw error;
+        }
+      },
+      onFailure: async ({ token, controller }) => {
+        await this.#markWorkflowFailed(walletId, token);
+        if (controller?.signal.aborted) this.#setMetadata(walletId, { approval: null });
+      },
+    });
+  }
+
   prepareWalletMiningCredential(
     walletId: string,
     selectedWalletId: string | null,
   ): Promise<Readonly<WalletConnectionCommandResult>> {
+    if (this.production?.capability?.flow === 'direct-mining-key') return this.#authorizeMiningKey(walletId, selectedWalletId);
     return this.#run({
       walletId,
       selectedWalletId,
@@ -452,6 +520,12 @@ export class WalletConnectionService implements WalletConnectionOperations {
     walletId: string,
     selectedWalletId: string | null,
   ): Promise<Readonly<WalletConnectionCommandResult>> {
+    const pending = this.#operations.get(walletId);
+    if (pending?.controller && this.production?.capability?.flow === 'direct-mining-key') {
+      if (selectedWalletId !== walletId || pending.committing) return Promise.resolve(this.#result(false, 'wallet-operation-conflict', 'The verified credential is being saved. Please wait.', walletId));
+      pending.controller.abort();
+      return pending.promise;
+    }
     return this.#run({
       walletId,
       selectedWalletId,
@@ -641,6 +715,7 @@ export class WalletConnectionService implements WalletConnectionOperations {
     }
 
     this.#disposed = true;
+    for (const operation of this.#operations.values()) if (!operation.committing) operation.controller?.abort();
     this.#listeners.clear();
     const pending = [...this.#operations.values()].map(
       (operation) => operation.promise,
@@ -686,7 +761,9 @@ export class WalletConnectionService implements WalletConnectionOperations {
     }
 
     const token = Symbol(`${definition.walletId}:${definition.step}`);
+    const controller = definition.step === 'authorize-mining-key' ? new AbortController() : undefined;
     const context: WalletOperationContext = {
+      controller,
       wallet,
       capability: this.production!.capability!,
       token,
@@ -695,6 +772,7 @@ export class WalletConnectionService implements WalletConnectionOperations {
       this.#perform(definition, context),
     );
     this.#operations.set(definition.walletId, {
+      controller,
       step: definition.step,
       token,
       promise: operation,
@@ -987,6 +1065,7 @@ export class WalletConnectionService implements WalletConnectionOperations {
     onboardingStatus: WalletOnboardingStatus,
     approval: Readonly<WalletApprovalPresentation> | null | undefined,
   ): Readonly<WalletApprovalPresentation> | null {
+    if (approval?.kind === 'mining-key') return onboardingStatus === 'ready' ? null : approval;
     if (onboardingStatus !== 'awaiting-connection' || !approval) {
       return null;
     }

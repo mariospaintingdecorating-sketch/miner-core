@@ -47,6 +47,8 @@ export type WalletConnectionReasonCode =
   | 'application-disposed';
 
 export interface WalletApprovalPresentation {
+  readonly accountName?: string;
+  readonly kind?: 'mining-key';
   readonly deepLink: string;
   readonly expiresAt: number;
   readonly waiting: true;
@@ -67,6 +69,7 @@ export interface WalletSecureState {
 }
 
 export type WalletConnectionOperationStep =
+  | 'authorize-mining-key'
   | 'begin-connection'
   | 'prepare-mining-credential'
   | 'verify-mining-credential'

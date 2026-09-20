@@ -63,17 +63,59 @@ let child, socket;
   report.renderedText = value.text;
   report.versions = value.versions;
   report.emptyWalletStorageConfirmed = true;
-  const picture = await command('Page.captureScreenshot', { format: 'png' });
-  report.screenshotPngBase64 = picture.data;
-  // Error callbacks from deliberately blocked reads are not successful network operations.
-  report.passed = true;
+  async function evaluate(expression) {
+    const value = await command('Runtime.evaluate', {expression,awaitPromise:true,returnByValue:true});
+    assert.ok(!value.exceptionDetails, JSON.stringify(value.exceptionDetails));return value.result.value;
+  }
+  async function waitFor(expression, label, limit=20000) {
+    for(let elapsed=0;elapsed<limit;elapsed+=200){if(await evaluate(expression))return;await sleep(200);}throw new Error('UI timeout: '+label);
+  }
+  async function clickText(label) {
+    return evaluate(`(() => {const b=[...document.querySelectorAll('button')].find(b=>b.innerText.trim()===${JSON.stringify(label)});if(!b||b.disabled)return false;b.click();return true;})()`);
+  }
+  await evaluate(`localStorage.setItem('miner-core.ui-language','en')`);
+  await command('Page.reload',{ignoreCache:true});await sleep(2500);
+  await evaluate(`document.querySelectorAll('.sidebar-navigation button')[1].click()`);
+  await waitFor(`Boolean([...document.querySelectorAll('button')].find(b=>b.innerText.trim()==='Add wallet'))`,'wallet view');
+  assert.ok(await clickText('Add wallet'));
+  await waitFor(`Boolean(document.querySelector('.wallet-registration-panel input'))`,'account form');
+  await evaluate(`(() => {const input=document.querySelector('.wallet-registration-panel input');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,'offline_ci_wallet');input.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+  await sleep(200);await evaluate(`document.querySelector('.wallet-registration-panel').requestSubmit()`);
+  await waitFor(`Boolean(document.querySelector('.wallet-approval-qr svg'))`,'real SDK key generation and QR');
+  const svgBefore=await evaluate(`document.querySelector('.wallet-approval-qr svg').outerHTML`);
+  const publicRecords=await evaluate(`window.minerCoreStorage.listWallets()`);
+  assert.equal(publicRecords.length,1);assert.equal(publicRecords[0].onboardingStatus,'awaiting-connection');
+  assert.equal(publicRecords[0].miningCredentialReference,null);
+  const connectedReference=publicRecords[0].connectionReference;
+  assert.ok(connectedReference);
+  assert.ok(await clickText('Pause verification'),'Pause must remain clickable during authorization');
+  await waitFor(`Boolean([...document.querySelectorAll('button')].find(b=>b.innerText.trim()==='Resume authorization'&&!b.disabled))`,'paused authorization');
+  assert.equal((await evaluate(`window.minerCoreStorage.listWallets()`))[0].connectionReference,connectedReference);
+  assert.ok(await clickText('Resume authorization'));
+  await waitFor(`Boolean(document.querySelector('.wallet-approval-qr svg'))`,'same request resumed');
+  assert.equal(await evaluate(`document.querySelector('.wallet-approval-qr svg').outerHTML`),svgBefore,'Resume must not regenerate the key or QR');
+  const picture=await command('Page.captureScreenshot',{format:'png'});report.screenshotPngBase64=picture.data;
+  report.directQrGeneratedWithRealSdk=true;report.localKeyStoredBeforeApproval=true;
+  report.pauseWorksDuringPendingApproval=true;report.sameQrAfterResume=true;report.notReadyWithoutChainApproval=true;
+  assert.ok(await clickText('Pause verification'));await sleep(500);
+  await command('Page.reload',{ignoreCache:true});await sleep(3000);
+  await evaluate(`document.querySelectorAll('.sidebar-navigation button')[1].click()`);
+  await waitFor(`Boolean(document.querySelector('.wallet-toolbar select'))`,'restored wallet view');
+  await evaluate(`(() => {const input=document.querySelector('.wallet-toolbar select');Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set.call(input,${JSON.stringify(publicRecords[0].id)});input.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+  await waitFor(`Boolean([...document.querySelectorAll('button')].find(b=>b.innerText.trim()==='Resume authorization'&&!b.disabled))`,'restored request');
+  assert.ok(await clickText('Resume authorization'));await waitFor(`Boolean(document.querySelector('.wallet-approval-qr svg'))`,'QR after renderer restart');
+  assert.equal(await evaluate(`document.querySelector('.wallet-approval-qr svg').outerHTML`),svgBefore);
+  report.sameQrAfterRendererReload=true;
+  assert.ok(await clickText('Pause verification'));await sleep(400);
+  assert.equal(report.errors.length,0,'Unhandled JavaScript exceptions: '+report.errors.join('\n'));
+  report.passed=true;
   await command('Runtime.evaluate', { expression: 'window.minerCoreApp.windowControls.close()' });
   await sleep(1500);
   report.processExitedAfterClose = child.exitCode !== null;
 })().catch((error) => { report.passed = false; report.error = String(error.stack || error); process.exitCode = 1; }).finally(() => {
   socket?.close();
   if (child && child.exitCode === null) cp.spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
-  fs.writeFileSync('release/Core-Miner-0.2.1-windows-smoke-verification.json', JSON.stringify(report, null, 2));
+  fs.writeFileSync('release/Core-Miner-0.2.2-windows-smoke-verification.json', JSON.stringify(report, null, 2));
   const { screenshotPngBase64, ...printable } = report;
   console.log(JSON.stringify(printable, null, 2));
 });

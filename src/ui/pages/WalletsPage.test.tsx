@@ -106,17 +106,11 @@ describe('WalletsPage', () => {
     expect(html).toContain('Wallet service');
     expect(html).toContain('Connection service ready');
     expect(html).toContain('Selected wallet');
-    expect(html).toContain('Wallet approved');
-    expect(html).toContain('Wallet onboarding progress');
-    expect(html).toContain('Local wallet created');
-    expect(html).toContain('Mining credential ready');
-    expect(html).toContain('Ready for mining');
-    expect(html).toContain('Wallet connection');
-    expect(html).toContain('Approved');
-    expect(html).toContain('Not stored');
-    expect(html).toContain('Prepare mining credential');
-    expect(html).toContain('Disconnect');
-    expect(html).toContain('Not ready');
+    expect(html).toContain('Resume authorization');
+    expect(html).toContain('AN Wallet account name');
+    expect(html).not.toContain('Prepare mining credential');
+    expect(html).not.toContain('Wallet onboarding progress');
+    expect(html).toContain('Mining keys are handled automatically');
     expect(html).not.toContain('<option value="warning">');
     expect(html).not.toContain('<option value="error">');
     expect(html).not.toContain('<option value="offline">');
@@ -155,10 +149,10 @@ describe('WalletsPage', () => {
       />,
     );
 
-    expect(html).toContain('Reset wallet connection');
-    expect(html).toContain('approval request was cleared safely');
-    expect(html).not.toContain('Retry wallet approval');
-    expect(html).toContain('Wallet approval failed. Reset the connection and try again.');
+    expect(html).toContain('Resume authorization');
+    expect(html).toContain('same key');
+    expect(html).not.toContain('Reset wallet connection');
+    expect(html).toContain('Approval is not confirmed yet.');
     expect(html).not.toContain('bee-wallet-approval-failed');
     expect(html).not.toContain('Error:');
   });
@@ -194,9 +188,9 @@ describe('WalletsPage', () => {
       />,
     );
 
-    expect(html).toContain('Reset wallet connection');
-    expect(html).toContain('could not read wallet_hello from the network');
-    expect(html).toContain('wallet did not report a rejection');
+    expect(html).toContain('Resume authorization');
+    expect(html).toContain('network read did not complete');
+    expect(html).toContain('not a wallet rejection');
     expect(html).not.toContain('Wallet approval failed');
     expect(html).not.toContain('bee-wallet-hello-read-failed');
   });
@@ -262,9 +256,9 @@ describe('WalletsPage', () => {
     );
 
     expect(html).toContain('data-onboarding-status="disconnected"');
-    expect(html).toContain('Local wallet created');
-    expect(html).toContain('Connect it to begin the explicit Bee wallet approval flow');
-    expect(html).toMatch(/<button[^>]*>Connect wallet<\/button>/);
+    expect(html).toContain('AN Wallet account name');
+    expect(html).toContain('Mining keys are handled automatically');
+    expect(html).toMatch(/<button[^>]*>Show authorization QR<\/button>/);
     expect(html).toContain('Continue setup');
   });
 
@@ -304,10 +298,10 @@ describe('WalletsPage', () => {
     );
 
     expect(html).toContain('data-onboarding-status="awaiting-connection"');
-    expect(html).toContain('Connection pending');
-    expect(html).toContain('Wallet pending');
+    expect(html).toContain('Wallet approval QR code');
+    expect(html).toContain('AN Wallet account name');
     expect(html).not.toContain('Complete wallet approval');
-    expect(html).toContain('will continue automatically');
+    expect(html).toContain('Mining keys are handled automatically');
     expect(html).toContain('Waiting for wallet approval');
     expect(html).toContain('Wallet approval QR code');
     expect(html).toContain('Open Wallet');
@@ -318,7 +312,7 @@ describe('WalletsPage', () => {
   it('asks for the wallet name once and keeps the internal ID out of the form', () => {
     const source = readFileSync(new URL('./WalletsPage.tsx', import.meta.url), 'utf8');
 
-    expect(source.match(/<span>\{t\('Wallet name'\)\}<\/span>/g)).toHaveLength(1);
+    expect(source.match(/value=\{walletName\}/g)).toHaveLength(1);
     expect(source).not.toContain('<span>Wallet ID</span>');
     expect(source).not.toContain('<span>Display name</span>');
     expect(source).toContain('onRegisterWallet({ name: normalizedName })');
@@ -392,16 +386,15 @@ describe('WalletsPage', () => {
     const propagationHtml = render(propagatingWallet);
     const readyHtml = render(readyWallet);
 
-    expect(approvalHtml).toContain('Mining credential approval pending');
-    expect(approvalHtml).toContain('Generating mining keys and waiting for wallet authorization');
-    expect(awaitingPropagationHtml).toContain('Mining credential awaiting verification');
-    expect(awaitingPropagationHtml).toContain('Verify propagation');
-    expect(propagationHtml).toContain('Waiting for mining-key propagation');
-    expect(propagationHtml).toContain('Waiting for mining-key propagation confirmation');
-    expect(propagationHtml).toContain('Bee propagation verification must finish');
+    expect(approvalHtml).toContain('Confirmation is checked automatically');
+    expect(awaitingPropagationHtml).toContain('Check saved key');
+    expect(awaitingPropagationHtml).not.toContain('Prepare mining credential');
+    expect(propagationHtml).toContain('Confirmation is checked automatically');
+    expect(propagationHtml).not.toContain('The mining key is confirmed on-chain');
     expect(readyHtml).toContain('data-onboarding-status="ready"');
-    expect(readyHtml).toContain('Mining is still started only by an explicit operator command');
-    expect(readyHtml).toContain('View wallet readiness');
+    expect(readyHtml).toContain('The mining key is confirmed on-chain');
+    expect(readyHtml).toContain('Mining starts only when you press Start');
+
   });
 
   it('renders wallets as a table with six rewards per wallet and no reward chart', () => {

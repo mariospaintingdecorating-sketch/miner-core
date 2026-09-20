@@ -952,3 +952,54 @@ describe('WalletConnectionService', () => {
     expect(connection?.beginConnection).not.toHaveBeenCalled();
   });
 });
+
+describe('single QR authorization orchestration',()=>{
+  function directCapability() { return {...capability(),flow:'direct-mining-key' as const}; }
+  it('completes key setup automatically only after owner verification and does not start mining',async()=>{
+    const c=directCapability(); const f=fixture({connection:c});
+    const result=await f.service.beginWalletConnection('wallet-a');
+    expect(result.accepted).toBe(true);
+    expect(c.beginConnection).toHaveBeenCalledWith(expect.objectContaining({walletName:'Alpha',resumeReference:null}));
+    expect(c.prepareMiningCredential).toHaveBeenCalledOnce();expect(c.verifyMiningCredentialPropagation).toHaveBeenCalledOnce();
+    expect(f.connectionService.presentation('wallet-a').miningReady).toBe(true);
+    expect(f.wallets.wallet('wallet-a')?.session).toBeNull();
+    expect(f.wallets.wallet('wallet-b')?.connectionReference).toBeNull();
+  });
+  it('keeps the old mining credential until the replacement is verified',async()=>{
+    const c=directCapability(); const f=fixture({connection:c});
+    f.wallets.updateConnection('wallet-a',{walletAddress:'0:public-wallet',onboardingStatus:'failed',connectionReference:'old',miningCredentialReference:'old-key'});
+    c.awaitConnection.mockRejectedValueOnce(new Error('pending'));
+    await f.service.beginWalletConnection('wallet-a');
+    expect(f.wallets.wallet('wallet-a')?.miningCredentialReference).toBe('old-key');
+    expect(c.disconnect).not.toHaveBeenCalled();expect(c.prepareMiningCredential).not.toHaveBeenCalled();
+    expect(f.connectionService.presentation('wallet-a').miningReady).toBe(false);
+  });
+  it('supports Pause during approval without deleting the request or preparing a credential',async()=>{
+    const c=directCapability();
+    c.awaitConnection.mockImplementation((_reference:string,signal?:AbortSignal)=>new Promise((_resolve,reject)=>signal?.addEventListener('abort',()=>reject(new Error('paused')),{once:true})));
+    const f=fixture({connection:c});const running=f.service.beginWalletConnection('wallet-a');
+    await vi.waitFor(()=>expect(f.connectionService.presentation('wallet-a').approval?.kind).toBe('mining-key'));
+    await f.service.disconnectWallet('wallet-a');await running;
+    expect(c.disconnect).not.toHaveBeenCalled();expect(c.prepareMiningCredential).not.toHaveBeenCalled();
+    expect(f.wallets.wallet('wallet-a')?.connectionReference).toBe('private-connection-1');
+    expect(f.connectionService.presentation('wallet-a').operationPending).toBe(false);
+    expect(f.connectionService.presentation('wallet-a').miningReady).toBe(false);
+  });
+  it('checks duplicate on-chain identity before enabling a second runtime',async()=>{
+    const c=directCapability();const f=fixture({connection:c});
+    f.wallets.updateConnection('wallet-b',{walletAddress:'0:public-wallet',onboardingStatus:'ready',connectionReference:'b',miningCredentialReference:'b-key'});
+    const result=await f.service.beginWalletConnection('wallet-a');expect(result.accepted).toBe(false);
+    expect(f.connectionService.presentation('wallet-a').lastFailureCode).toBe('bee-wallet-already-registered');
+    expect(c.prepareMiningCredential).not.toHaveBeenCalled();
+  });
+  it('keeps the same request reference for retry and does not demand a reset',async()=>{
+    const c=directCapability();const f=fixture({connection:c}); c.awaitConnection.mockRejectedValueOnce(new Error('pending'));
+    await f.service.beginWalletConnection('wallet-a');const ref=f.wallets.wallet('wallet-a')?.connectionReference;
+    await f.service.beginWalletConnection('wallet-a');expect(c.beginConnection).toHaveBeenLastCalledWith(expect.objectContaining({resumeReference:ref}));
+    expect(c.disconnect).not.toHaveBeenCalled();
+  });
+  it('continues to reject authorization changes during an active mining session',async()=>{
+    const c=directCapability();const f=fixture({connection:c,activeWallet:true});
+    expect((await f.service.beginWalletConnection('wallet-a')).accepted).toBe(false);expect(c.beginConnection).not.toHaveBeenCalled();
+  });
+});

@@ -1,644 +1,301 @@
-import { approvalReadBefore } from './ApprovalDeadline';
-import { miningAuthorizationContext } from '../../shared/chainIdentity';
-import type { CoreEvent, EventPublisher } from '../../shared/events';
-import { CoreEventEmitter } from '../../shared/events';
+import { miningAuthorizationContext, mobileContractAddress, sameWalletAddress } from '../../shared/chainIdentity';
+import { CoreEventEmitter, type CoreEvent, type EventPublisher } from '../../shared/events';
 import type { SecureReferenceStorageContract } from '../../storage/contracts';
-import type {
-  BeeConnectedWallet,
-  BeeConnectionReference,
-  BeeCredentialReference,
-  BeePreparedMiningCredential,
-  BeeSdkFailure,
-  BeeSdkGatewayContract,
-  BeeSdkResourceOwner,
-  BeeWalletConnectionCapability,
-  BeeWalletConnectionRequest,
-  BeeWalletConnectionState,
-} from './contracts';
-import type {
-  BeeNativeConnect,
-  BeeNativeSdkFactory,
-  BeeNativeWalletHello,
-} from './BeeNativeSdk';
-import { TeamGoshBeeNativeSdk } from './BeeNativeSdk';
+import type { BeeConnectedWallet, BeeConnectionReference, BeeCredentialReference, BeePreparedMiningCredential, BeeSdkFailure, BeeSdkGatewayContract, BeeSdkResourceOwner, BeeWalletConnectionCapability, BeeWalletConnectionInput, BeeWalletConnectionRequest, BeeWalletConnectionState } from './contracts';
+import { TeamGoshDirectWalletAuthorizationSdk, walletLookupEndpointGroups, type DirectWalletAuthorizationSdk, type WalletAuthorizationIdentity } from './DirectWalletAuthorizationSdk';
+import { assertAuthorizationActive, authorizationDelay, authorizationRead, WalletAuthorizationError } from './WalletAuthorizationRead';
 
 export interface BeeWalletConnectionConfiguration {
   readonly endpoints: readonly string[];
   readonly appId: string;
+  readonly apiUrl?: string;
 }
-
-const SHARED_KEY_SESSION_TTL_SECONDS = 31_536_000;
-const WALLET_HELLO_MAX_ATTEMPTS = 90;
-const WALLET_HELLO_INTERVAL_MS = 2_000;
-const WALLET_HELLO_READ_RETRY_DELAYS_MS = Object.freeze([
-  2_000,
-  4_000,
-  8_000,
-]);
-const MINING_KEY_APPROVAL_MAX_ATTEMPTS = 30;
-const MINING_KEY_APPROVAL_INTERVAL_MS = 2_000;
-const PROPAGATION_MAX_ATTEMPTS = 60;
-const PROPAGATION_INTERVAL_MS = 2_000;
-
-interface StoredConnectionState {
-  readonly authorizationContext: string | null;
-  readonly approvalDeadlineMs: number | null;
-  readonly version: 1;
+interface DirectConnection {
+  readonly version: 2;
+  readonly kind: 'direct-mining-key';
   readonly status: 'awaiting-approval' | 'connected' | 'failed';
-  readonly sessionId: string;
-  readonly description: string;
-  readonly clientDhSecret: string;
-  readonly createdAt: string;
-  readonly expiresAt: number;
-  readonly sessionStateJson: string | null;
-  readonly walletName: string | null;
-  readonly walletAddress: string | null;
-  readonly credentialReference: BeeCredentialReference | null;
-  readonly failure: Readonly<BeeSdkFailure> | null;
-}
-
-interface StoredMiningCredential {
-  readonly authorizationContext: string | null;
-  readonly version: 1;
+  readonly authorizationContext: string;
+  readonly appId: string;
   readonly walletName: string;
-  readonly walletAddress: string;
-  readonly minerAddress: string;
+  readonly expectedWalletAddress: string | null;
+  readonly walletAddress: string | null;
+  readonly minerAddress: string | null;
   readonly publicKey: string;
   readonly secretKey: string;
+  readonly deepLink: string;
+  readonly createdAt: string;
+  readonly approvalDeadlineMs: number;
+  readonly verifiedAt: number | null;
+  readonly pendingCredentialReference: string;
+  readonly credentialReference: string | null;
+  /** Retained encrypted legacy state, never a network session prerequisite. */
+  readonly previousConnectionReference: string | null;
+  readonly failure: Readonly<BeeSdkFailure> | null;
 }
-
-type GatewayWithResources = BeeSdkGatewayContract & BeeSdkResourceOwner;
-
-function errorFailure(code: string, error: unknown): Readonly<BeeSdkFailure> {
-  const message = errorMessage(error);
-  const categorizedCode =
-    code === 'bee-wallet-approval-failed' &&
-    /(?:timed?\s*out|timeout|expired)/i.test(message)
-      ? 'bee-wallet-approval-timeout'
-      : code;
-
-  return Object.freeze({
-    code: categorizedCode,
-    message: message || `Bee wallet operation failed (${categorizedCode}).`,
-  });
+interface LegacyConnection {
+  readonly version: 1;
+  readonly status: 'awaiting-approval' | 'connected' | 'failed';
+  readonly walletName: string | null;
+  readonly walletAddress: string | null;
+  readonly credentialReference: string | null;
+  readonly failure: Readonly<BeeSdkFailure> | null;
+  readonly [key: string]: unknown;
 }
-
-function errorMessage(error: unknown): string {
-  const value =
-    error instanceof Error
-      ? error.message
-      : typeof error === 'string'
-        ? error
-        : '';
-
-  return value
-    .trim()
-    .replace(/secret/gi, '[redacted]')
-    .replace(/(?:[a-z][a-z0-9+.-]*):\/\/\S+/gi, '[redacted-url]')
-    .slice(0, 500);
-}
-
-function walletHelloReadFailure(error: unknown): boolean {
-  const message = errorMessage(error);
-
-  if (
-    /(?:approval|wallet[_\s-]?hello).*(?:expired|timed?\s*out)|(?:expired|timed?\s*out).*(?:approval|wallet[_\s-]?hello)/i.test(
-      message,
-    )
-  ) {
-    return false;
-  }
-
-  return (
-    /query\s+wallet[_\s-]?hello/i.test(message) &&
-    /graphql|connection|network|pool|transport/i.test(message)
-  );
-}
-
-function waitForDelay(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
-}
+type Connection = DirectConnection | LegacyConnection;
+type Gateway = BeeSdkGatewayContract & BeeSdkResourceOwner;
+const OBSERVATION_MS = 180_000;
+const SINGLE_READ_MS = 10_000;
+const POLL_MS = 3_000;
+const DEFAULT_API = 'https://app-backend.ackinacki.org/api';
 
 function requiredText(value: unknown, label: string): string {
-  if (typeof value !== 'string' || value.trim().length === 0) {
-    throw new Error(`${label} is missing from secure Bee state.`);
-  }
-
+  if (typeof value !== 'string' || !value.trim()) throw new Error(`${label} is missing from secure Bee state.`);
   return value;
 }
+function normalizeName(value: string): string {
+  const name = value.trim().toLowerCase();
+  if (name.length < 2 || name.length > 128 || /[\s\x00-\x1f\x7f]/u.test(name)) {
+    throw new WalletAuthorizationError('bee-wallet-account-name-invalid', 'Enter the existing AN Wallet account name, not a new display label.');
+  }
+  return name;
+}
+function failureFor(error: unknown, fallback = 'bee-wallet-authorization-pending'): Readonly<BeeSdkFailure> {
+  if (error instanceof WalletAuthorizationError) return Object.freeze({ code: error.code, message: error.message });
+  // Never serialize SDK exceptions: they can contain URLs, signatures or credentials.
+  return Object.freeze({ code: fallback, message: 'The account or mining-key approval is not confirmed yet. Check the account selected in AN Wallet and retry the same request.' });
+}
+function validateKeys(publicKey: string, secretKey: string, deepLink: string, appId: string): void {
+  if (!/^[a-f0-9]{64}$/i.test(publicKey) || !/^[a-f0-9]{64}$/i.test(secretKey)) throw new Error('Invalid mining-key encoding.');
+  const url = new URL(deepLink);
+  if (url.origin !== 'https://links.gosh.sh' || url.pathname !== '/deeplinks/wallet/v2/set-mining-keys' || url.username || url.password || url.hash || [...url.searchParams.keys()].join(',') !== 'payload') throw new Error('Unexpected mining-key approval link.');
+  const encoded = url.searchParams.get('payload');
+  if (!encoded || !/^[A-Za-z0-9_-]+$/.test(encoded)) throw new Error('Invalid approval payload.');
+  const payload = JSON.parse(atob(encoded.replace(/-/g, '+').replace(/_/g, '/')));
+  if (payload.app_id !== appId || payload.pubkey !== publicKey || Object.keys(payload).sort().join(',') !== 'app_id,pubkey') throw new Error('Approval payload does not match the generated key and application.');
+}
 
-export class BeeWalletConnectionAdapter
-  implements BeeWalletConnectionCapability
-{
-  #connect: BeeNativeConnect | null = null;
+/** Direct mining-key QR authorization. No BeeConnect hello or second write request. */
+export class BeeWalletConnectionAdapter implements BeeWalletConnectionCapability {
+  readonly flow = 'direct-mining-key' as const;
+  readonly #pendingReads = new Map<string, Promise<unknown>>();
+  readonly #waiters = new Map<string, Promise<Readonly<BeeConnectedWallet>>>();
   #eventSequence = 0;
-
   constructor(
-    private readonly gateway: GatewayWithResources,
+    private readonly gateway: Gateway,
     private readonly storage: SecureReferenceStorageContract,
     private readonly configuration: BeeWalletConnectionConfiguration,
-    private readonly nativeSdk: BeeNativeSdkFactory = new TeamGoshBeeNativeSdk(),
+    private readonly sdk: DirectWalletAuthorizationSdk = new TeamGoshDirectWalletAuthorizationSdk(),
     private readonly eventPublisher: EventPublisher = new CoreEventEmitter(),
-    private readonly createReference: (kind: 'connection' | 'credential') => string =
-      (kind) => `${kind}:${globalThis.crypto.randomUUID()}`,
-    private readonly now: () => string = () => new Date().toISOString(),
-    private readonly retryDelay: (milliseconds: number) => Promise<void> =
-      waitForDelay,
+    private readonly createReference: (kind: 'connection' | 'credential') => string = kind => `${kind}:${globalThis.crypto.randomUUID()}`,
+    private readonly now: () => number = Date.now,
   ) {
-    if (configuration.endpoints.length === 0 || configuration.appId.trim().length === 0) {
-      throw new TypeError('Bee endpoints and application ID are required.');
-    }
+    if (!configuration.endpoints.length || !/^0x[a-f0-9]{64}$/i.test(configuration.appId)) throw new TypeError('A full application ID and network endpoints are required.');
   }
 
-  async beginConnection(): Promise<Readonly<BeeWalletConnectionRequest>> {
-    const reference = this.createReference('connection');
-
-    try {
-      await this.gateway.initialize();
-      const connect = this.#connectionClient();
-      const result = this.gateway.ownResource(
-        connect.create_shared_key_session(
-          this.configuration.appId,
-          SHARED_KEY_SESSION_TTL_SECONDS,
-          null,
-        ),
-      );
-
-      try {
-        const expiresAt = Number(result.expires_at);
-        const state: StoredConnectionState = Object.freeze({
-          authorizationContext: miningAuthorizationContext(this.configuration),
-          approvalDeadlineMs: Date.now() + 180_000,
-          version: 1,
-          status: 'awaiting-approval',
-          sessionId: result.session_id,
-          description: result.description,
-          clientDhSecret: result.client_dh_secret,
-          createdAt: result.created_at.toString(),
-          expiresAt,
-          sessionStateJson: null,
-          walletName: null,
-          walletAddress: null,
-          credentialReference: null,
-          failure: null,
-        });
-        await this.storage.saveSecureValue(reference, JSON.stringify(state));
-        this.#publishConnectionEvent(
-          'bee-wallet-connection-started',
-          state,
-        );
-
-        return Object.freeze({
-          reference,
-          deepLink: result.deep_link,
-          expiresAt: Math.min(expiresAt, Math.floor(state.approvalDeadlineMs! / 1000)),
-        });
-      } finally {
-        this.gateway.releaseResource(result);
+  async beginConnection(input?: BeeWalletConnectionInput): Promise<Readonly<BeeWalletConnectionRequest>> {
+    if (!input) throw new WalletAuthorizationError('bee-wallet-account-name-invalid', 'Enter the existing AN Wallet account name first.');
+    assertAuthorizationActive(input.signal);
+    const name = normalizeName(input.walletName);
+    const context = miningAuthorizationContext(this.configuration);
+    const previous = input.resumeReference ? await this.#load(input.resumeReference) : null;
+    assertAuthorizationActive(input.signal);
+    if (previous?.version === 2) {
+      if (previous.walletName !== name || previous.authorizationContext !== context || previous.appId !== this.configuration.appId) {
+        throw new WalletAuthorizationError('bee-wallet-authorization-context-mismatch', 'This saved request belongs to another account or application. Its key was not replaced.');
       }
-    } catch (error) {
-      const failure = errorFailure('bee-wallet-connection-start-failed', error);
-      this.#publishConnectionFailure(failure);
-      throw error;
+      if (input.expectedWalletAddress && previous.walletAddress && !sameWalletAddress(input.expectedWalletAddress, previous.walletAddress)) throw new WalletAuthorizationError('bee-wallet-address-mismatch', 'The resolved wallet does not match this saved profile.');
+      validateKeys(previous.publicKey, previous.secretKey, previous.deepLink, previous.appId);
+      const resumed: DirectConnection = { ...previous, status: 'awaiting-approval', failure: null, verifiedAt: null, approvalDeadlineMs: this.now() + OBSERVATION_MS };
+      await this.storage.saveSecureValue(input.resumeReference!, JSON.stringify(resumed));
+      assertAuthorizationActive(input.signal);
+      return Object.freeze({ reference: input.resumeReference!, accountName: name, deepLink: resumed.deepLink, expiresAt: Math.floor(resumed.approvalDeadlineMs / 1_000), kind: 'mining-key' });
     }
-  }
-
-  async awaitConnection(
-    reference: BeeConnectionReference,
-  ): Promise<Readonly<BeeConnectedWallet>> {
-    const state = await this.#loadConnection(reference);
-
-    if (!state) {
-      throw new Error('Bee wallet connection reference was not found.');
-    }
-
-    if (
-      state.status === 'connected' &&
-      state.sessionStateJson &&
-      state.walletName &&
-      state.walletAddress
-    ) {
-      return Object.freeze({
-        reference,
-        walletName: state.walletName,
-        walletAddress: state.walletAddress,
-      });
-    }
-
+    await authorizationRead(this.gateway.initialize(), this.now() + SINGLE_READ_MS, input.signal, undefined, this.now);
+    assertAuthorizationActive(input.signal);
+    const keys = await authorizationRead(this.sdk.generate(this.configuration.appId), this.now() + SINGLE_READ_MS, input.signal, value => value.free(), this.now);
     try {
-      await this.gateway.initialize();
-      const result = this.gateway.ownResource(
-        await this.#waitForWalletHello(state),
-      );
-
-      try {
-        const connected: StoredConnectionState = Object.freeze({
-          ...state,
-          status: 'connected',
-          sessionStateJson: result.session_state_json,
-          walletName: result.wallet_name,
-          walletAddress: result.wallet_address,
-          failure: null,
-        });
-        await this.storage.saveSecureValue(reference, JSON.stringify(connected));
-        this.#publishConnectionEvent('bee-wallet-connected', connected);
-
-        return Object.freeze({
-          reference,
-          walletName: result.wallet_name,
-          walletAddress: result.wallet_address,
-        });
-      } finally {
-        this.gateway.releaseResource(result);
-      }
-    } catch (error) {
-      const failure = errorFailure(
-        walletHelloReadFailure(error)
-          ? 'bee-wallet-hello-read-failed'
-          : 'bee-wallet-approval-failed',
-        error,
-      );
-      const failed = Object.freeze({
-        ...state,
-        status: 'failed' as const,
-        failure,
-      });
-      await this.storage
-        .saveSecureValue(reference, JSON.stringify(failed))
-        .catch(() => undefined);
-      this.#publishConnectionFailure(failure, failed);
-      throw error;
-    }
+      assertAuthorizationActive(input.signal);
+      const publicKey = keys.public, secretKey = keys.secret, deepLink = keys.deep_link;
+      validateKeys(publicKey, secretKey, deepLink, this.configuration.appId);
+      const reference = this.createReference('connection');
+      const state: DirectConnection = {
+        version: 2, kind: 'direct-mining-key', status: 'awaiting-approval', authorizationContext: context,
+        appId: this.configuration.appId, walletName: name,
+        expectedWalletAddress: input.expectedWalletAddress ?? previous?.walletAddress ?? null,
+        walletAddress: null, minerAddress: null, publicKey, secretKey, deepLink,
+        createdAt: new Date(this.now()).toISOString(), approvalDeadlineMs: this.now() + OBSERVATION_MS,
+        verifiedAt: null, pendingCredentialReference: this.createReference('credential'), credentialReference: null,
+        previousConnectionReference: input.resumeReference ?? null, failure: null,
+      };
+      // Save pending keys before showing QR. Retry/restart must never silently rotate them.
+      await this.storage.saveSecureValue(reference, JSON.stringify(state));
+      this.#publish('bee-wallet-connection-started', state);
+      return Object.freeze({ reference, accountName: name, deepLink, expiresAt: Math.floor(state.approvalDeadlineMs / 1_000), kind: 'mining-key' });
+    } finally { keys.free(); }
   }
 
-  async #waitForWalletHello(
-    state: StoredConnectionState,
-  ): Promise<BeeNativeWalletHello> {
-    let retryIndex = 0;
-    const deadline = state.approvalDeadlineMs ?? Date.now() + 180_000;
+  awaitConnection(reference: BeeConnectionReference, signal?: AbortSignal): Promise<Readonly<BeeConnectedWallet>> {
+    const existing = this.#waiters.get(reference);
+    if (existing) return existing;
+    const waiter = this.#awaitConnection(reference, signal);
+    this.#waiters.set(reference, waiter);
+    void waiter.then(() => { if (this.#waiters.get(reference) === waiter) this.#waiters.delete(reference); }, () => { if (this.#waiters.get(reference) === waiter) this.#waiters.delete(reference); });
+    return waiter;
+  }
 
-    while (true) {
-      if (Date.now() >= deadline) throw new Error('Wallet approval timed out.');
-      try {
-        return await approvalReadBefore(this.#connectionClient().wait_wallet_hello(
-          [...this.configuration.endpoints],
-          state.sessionId,
-          state.description,
-          state.clientDhSecret,
-          BigInt(state.createdAt),
-          WALLET_HELLO_MAX_ATTEMPTS,
-          WALLET_HELLO_INTERVAL_MS,
-        ), deadline);
-      } catch (error) {
-        const delayMs = WALLET_HELLO_READ_RETRY_DELAYS_MS[retryIndex];
-
-        if (delayMs === undefined || !walletHelloReadFailure(error)) {
-          throw error;
+  async #awaitConnection(reference: string, signal?: AbortSignal): Promise<Readonly<BeeConnectedWallet>> {
+    let state = await this.#direct(reference);
+    const deadline = state.approvalDeadlineMs;
+    let lastFailure: Readonly<BeeSdkFailure> = failureFor(null);
+    try {
+      await authorizationRead(this.gateway.initialize(), Math.min(deadline, this.now() + SINGLE_READ_MS), signal, undefined, this.now);
+      const endpointGroups = walletLookupEndpointGroups(this.configuration.endpoints);
+      let identity: WalletAuthorizationIdentity | null = null;
+      while (this.now() < deadline) {
+        assertAuthorizationActive(signal);
+        if (!identity) {
+          for (const endpoints of endpointGroups) {
+            if (this.now() >= deadline) break;
+            assertAuthorizationActive(signal);
+            try {
+              const resolved = await this.#read(`lookup:${state.walletName}:${JSON.stringify(endpoints)}`, () => this.sdk.resolve(endpoints, state.walletName, this.configuration.apiUrl ?? DEFAULT_API, state.appId), deadline, signal);
+              identity = { walletAddress: mobileContractAddress(resolved.walletAddress), minerAddress: mobileContractAddress(resolved.minerAddress) };
+              if (state.expectedWalletAddress && !sameWalletAddress(state.expectedWalletAddress, identity.walletAddress)) throw new WalletAuthorizationError('bee-wallet-address-mismatch', 'The account name resolves to a different wallet. The saved key was not replaced.');
+              break;
+            } catch (error) {
+              assertAuthorizationActive(signal);
+              if (error instanceof WalletAuthorizationError && error.code === 'bee-wallet-address-mismatch') throw error;
+              lastFailure = failureFor(error, 'bee-wallet-account-read-failed');
+            }
+          }
         }
-
-        retryIndex += 1;
-        await this.retryDelay(delayMs);
-      }
-    }
-  }
-
-  async prepareMiningCredential(
-    reference: BeeConnectionReference,
-  ): Promise<Readonly<BeePreparedMiningCredential>> {
-    const state = await this.#loadConnection(reference);
-
-    if (
-      !state ||
-      state.status !== 'connected' ||
-      !state.sessionStateJson ||
-      !state.walletName ||
-      !state.walletAddress
-    ) {
-      throw new Error('An approved Bee wallet connection is required.');
-    }
-
-    if (
-      state.credentialReference &&
-      (await this.storage.hasSecureValue(state.credentialReference))
-    ) {
-      return Object.freeze({
-        reference,
-        credentialReference: state.credentialReference,
-        walletName: state.walletName,
-        walletAddress: state.walletAddress,
-      });
-    }
-
-    if (state.authorizationContext !== miningAuthorizationContext(this.configuration)) {
-      throw new Error('Bee connection belongs to an unknown or different application context. Reconnect before creating new mining keys; existing keys are retained.');
-    }
-
-    const credentialReference = this.createReference('credential');
-    await this.gateway.initialize();
-    const keys = this.gateway.ownResource(
-      await this.nativeSdk.generateMiningKeys(this.configuration.endpoints),
-    );
-
-    try {
-      const minerAddress = await this.nativeSdk.resolveMinerAddress(
-        this.configuration.endpoints,
-        state.walletName,
-      );
-      const sessionUpdate = this.gateway.ownResource(
-        await this.#connectionClient().request_set_mining_keys(
-          [...this.configuration.endpoints],
-          state.sessionId,
-          state.description,
-          state.sessionStateJson,
-          this.configuration.appId,
-          keys.public,
-          MINING_KEY_APPROVAL_MAX_ATTEMPTS,
-          MINING_KEY_APPROVAL_INTERVAL_MS,
-        ),
-      );
-
-      try {
-        const credential: StoredMiningCredential = Object.freeze({
-          authorizationContext: null,
-          version: 1,
-          walletName: state.walletName,
-          walletAddress: state.walletAddress,
-          minerAddress,
-          publicKey: keys.public,
-          secretKey: keys.secret,
-        });
-        await this.storage.saveSecureValue(
-          credentialReference,
-          JSON.stringify(credential),
-        );
-
-        try {
-          await this.storage.saveSecureValue(
-            reference,
-            JSON.stringify({
-              ...state,
-              sessionStateJson: sessionUpdate.updated_session_state_json,
-              credentialReference,
-              failure: null,
-            } satisfies StoredConnectionState),
-          );
-        } catch (error) {
-          await this.storage.removeSecureValue(credentialReference).catch(() => undefined);
-          throw error;
+        if (identity && this.now() < deadline) {
+          try {
+            // Discovery elsewhere is not authorization. Only mining endpoints may verify this key.
+            await this.#read(`verify:${reference}:${state.publicKey}`, () => this.sdk.verify(this.configuration.endpoints, state.appId, identity!.minerAddress, state.publicKey), deadline, signal);
+            assertAuthorizationActive(signal);
+            const latest = await this.#direct(reference);
+            if (latest.publicKey !== state.publicKey || latest.approvalDeadlineMs !== deadline) throw new WalletAuthorizationError('bee-wallet-operation-stale', 'A newer request replaced this verification.');
+            assertAuthorizationActive(signal);
+            state = { ...latest, ...identity, status: 'connected', verifiedAt: this.now(), failure: null };
+            try { await this.storage.saveSecureValue(reference, JSON.stringify(state)); }
+            catch { throw new WalletAuthorizationError('bee-wallet-secure-save-failed', 'Approval was observed but could not be saved. The existing credential was not replaced.'); }
+            assertAuthorizationActive(signal);
+            this.#publish('bee-wallet-connected', state);
+            return Object.freeze({ reference, walletName: state.walletName, walletAddress: identity.walletAddress });
+          } catch (error) {
+            assertAuthorizationActive(signal);
+            if (error instanceof WalletAuthorizationError && ['bee-wallet-operation-stale','bee-wallet-secure-save-failed'].includes(error.code)) throw error;
+            lastFailure = failureFor(error);
+          }
         }
-
-        return Object.freeze({
-          reference,
-          credentialReference,
-          walletName: state.walletName,
-          walletAddress: state.walletAddress,
-        });
-      } finally {
-        this.gateway.releaseResource(sessionUpdate);
+        if (this.now() < deadline) await authorizationDelay(Math.min(POLL_MS, deadline - this.now()), signal);
       }
+      throw new WalletAuthorizationError(lastFailure.code === 'bee-wallet-read-timeout' ? lastFailure.code : 'bee-wallet-authorization-pending', 'Automatic checking ended without confirmation. Keep the same QR, approve it in the named AN Wallet account, then resume verification.');
     } catch (error) {
-      const operationFailure = errorFailure(
-        'bee-mining-credential-preparation-failed',
-        error,
-      );
-      const failed = Object.freeze({
-        ...state,
-        status: 'connected' as const,
-        failure: operationFailure,
-      });
-      await this.storage
-        .saveSecureValue(reference, JSON.stringify(failed))
-        .catch(() => undefined);
-      this.#publishConnectionFailure(operationFailure, failed);
+      const current = await this.#load(reference).catch(() => null);
+      const failure = failureFor(error);
+      if (current?.version === 2 && current.publicKey === state.publicKey && current.approvalDeadlineMs === deadline) {
+        await this.storage.saveSecureValue(reference, JSON.stringify({ ...current, status: 'failed', failure })).catch(() => undefined);
+        this.#publish('bee-wallet-connection-failed', current, failure);
+      }
       throw error;
-    } finally {
-      this.gateway.releaseResource(keys);
     }
   }
 
-  async verifyMiningCredentialPropagation(
-    reference: BeeConnectionReference,
-    credentialReference: BeeCredentialReference,
-    maxAttempts: number = PROPAGATION_MAX_ATTEMPTS,
-    intervalMs: number = PROPAGATION_INTERVAL_MS,
-  ): Promise<void> {
-    const state = await this.#loadConnection(reference);
+  async prepareMiningCredential(reference: BeeConnectionReference): Promise<Readonly<BeePreparedMiningCredential>> {
+    const state = await this.#direct(reference);
+    if (state.status !== 'connected' || state.verifiedAt === null || !state.walletAddress || !state.minerAddress) throw new Error('A verified mining-key authorization is required.');
+    const credentialReference = state.credentialReference ?? state.pendingCredentialReference;
+    const credential = { version: 1, authorizationContext: state.authorizationContext, walletName: state.walletName, walletAddress: state.walletAddress, minerAddress: state.minerAddress, publicKey: state.publicKey, secretKey: state.secretKey };
+    const old = await this.storage.loadSecureValue(credentialReference);
+    if (old) {
+      const parsed = parseStoredBeeMiningCredential(old);
+      if (parsed.publicKey !== state.publicKey || parsed.secretKey !== state.secretKey || parsed.minerAddress !== state.minerAddress) throw new Error('Credential reference conflict. No record was overwritten.');
+    } else await this.storage.saveSecureValue(credentialReference, JSON.stringify(credential));
+    await this.storage.saveSecureValue(reference, JSON.stringify({ ...state, credentialReference }));
+    return Object.freeze({ reference, credentialReference, walletName: state.walletName, walletAddress: state.walletAddress });
+  }
 
-    if (
-      !state ||
-      state.status !== 'connected' ||
-      state.credentialReference !== credentialReference
-    ) {
-      throw new Error('A prepared Bee mining credential is required.');
-    }
-
+  async verifyMiningCredentialPropagation(reference: BeeConnectionReference, credentialReference: BeeCredentialReference,
+    _maxAttempts = 60, _intervalMs = 2_000): Promise<void> {
+    const state = await this.#load(reference);
+    if (!state || state.credentialReference !== credentialReference) throw new Error('Prepared credential does not belong to this connection.');
     const serialized = await this.storage.loadSecureValue(credentialReference);
-
-    if (serialized === null) {
-      throw new Error('The prepared Bee mining credential was not found.');
-    }
-
+    if (!serialized) throw new Error('The saved mining credential is missing.');
     const credential = parseStoredBeeMiningCredential(serialized);
+    if (state.version === 2 && (state.walletName !== credential.walletName || state.publicKey !== credential.publicKey || state.minerAddress !== credential.minerAddress)) throw new Error('Credential identity mismatch.');
     try {
-      await this.gateway.initialize();
-      await this.nativeSdk.ensureMiningKeysPropagated(
-        this.configuration.endpoints,
-        this.configuration.appId,
-        credential.minerAddress,
-        credential.publicKey,
-        maxAttempts,
-        intervalMs,
-      );
-      const latestConnection = await this.#loadConnection(reference);
-      const latestCredential = await this.storage.loadSecureValue(credentialReference);
-      if (!latestConnection || latestConnection.credentialReference !== credentialReference ||
-          latestCredential !== serialized) {
-        throw new Error('Mining credential changed during verification. No record was overwritten.');
+      // Fresh direct completion already read owner_public[app_id] on the mining network.
+      const freshlyVerified = state.version === 2 && state.status === 'connected' && state.verifiedAt !== null && this.now() - state.verifiedAt >= 0 && this.now() - state.verifiedAt < 15_000;
+      if (!freshlyVerified) {
+        await this.gateway.initialize();
+        await this.#read(`verify:${reference}:${credential.publicKey}`, () => this.sdk.verify(this.configuration.endpoints, this.configuration.appId, credential.minerAddress, credential.publicKey), this.now() + SINGLE_READ_MS);
       }
-      await this.storage.saveSecureValue(credentialReference, JSON.stringify({
-        ...JSON.parse(serialized),
-        authorizationContext: miningAuthorizationContext(this.configuration),
-      }));
-      await this.storage.saveSecureValue(
-        reference,
-        JSON.stringify({ ...latestConnection, failure: null } satisfies StoredConnectionState),
-      );
+      const current = await this.#load(reference);
+      if (!current || current.credentialReference !== credentialReference || await this.storage.loadSecureValue(credentialReference) !== serialized) throw new Error('Credential changed during verification. No record was overwritten.');
+      await this.storage.saveSecureValue(credentialReference, JSON.stringify({ ...JSON.parse(serialized), authorizationContext: miningAuthorizationContext(this.configuration) }));
+      await this.storage.saveSecureValue(reference, JSON.stringify({ ...current, failure: null }));
     } catch (error) {
-      const failure = errorFailure(
-        'bee-mining-credential-propagation-failed',
-        error,
-      );
-      const current = await this.#loadConnection(reference).catch(() => null);
+      const current = await this.#load(reference).catch(() => null);
       if (current?.credentialReference === credentialReference) {
-        const failed = Object.freeze({ ...current, failure });
-        await this.storage.saveSecureValue(reference, JSON.stringify(failed)).catch(() => undefined);
-        this.#publishConnectionFailure(failure, failed);
+        const failure = failureFor(error, 'bee-mining-credential-propagation-failed');
+        await this.storage.saveSecureValue(reference, JSON.stringify({ ...current, failure })).catch(() => undefined);
+        this.#publish('bee-wallet-connection-failed', current, failure);
       }
       throw error;
     }
   }
 
-  async connectionState(
-    reference: BeeConnectionReference,
-  ): Promise<Readonly<BeeWalletConnectionState>> {
-    const state = await this.#loadConnection(reference);
-
-    if (!state) {
-      return Object.freeze({
-        reference,
-        status: 'disconnected',
-        walletName: null,
-        walletAddress: null,
-        credentialReference: null,
-        failure: null,
-      });
-    }
-
-    return Object.freeze({
-      reference,
-      status: state.status,
-      walletName: state.walletName,
-      walletAddress: state.walletAddress,
-      credentialReference: state.credentialReference,
-      failure: state.failure ? Object.freeze({ ...state.failure }) : null,
-    });
+  async connectionState(reference: BeeConnectionReference): Promise<Readonly<BeeWalletConnectionState>> {
+    const state = await this.#load(reference);
+    return Object.freeze({ reference, status: state?.status ?? 'disconnected', walletName: state?.walletName ?? null, walletAddress: state?.walletAddress ?? null, credentialReference: state?.credentialReference ?? null, failure: state?.failure ?? null });
   }
-
+  /** Explicit local disconnect only; pausing QR observation does not call this. */
   async disconnect(reference: BeeConnectionReference): Promise<void> {
-    const state = await this.#loadConnection(reference);
-
-    if (!state) {
-      return;
-    }
-
-    if (state.sessionStateJson) {
-      await this.gateway.initialize();
-      const result = this.gateway.ownResource(
-        await this.#connectionClient().disconnect_session(
-          [...this.configuration.endpoints],
-          state.sessionId,
-          state.description,
-          state.sessionStateJson,
-          'user-requested',
-          WALLET_HELLO_MAX_ATTEMPTS,
-          WALLET_HELLO_INTERVAL_MS,
-        ),
-      );
-      this.gateway.releaseResource(result);
-    }
-
-    if (state.credentialReference) {
-      await this.storage.removeSecureValue(state.credentialReference);
-    }
-
+    if (this.#waiters.has(reference)) throw new Error('Pause the pending authorization before removing its local record.');
+    const state = await this.#load(reference);
+    if (!state) return;
+    if (state.credentialReference) await this.storage.removeSecureValue(state.credentialReference);
+    if (state.version === 2 && state.pendingCredentialReference !== state.credentialReference) await this.storage.removeSecureValue(state.pendingCredentialReference);
     await this.storage.removeSecureValue(reference);
   }
 
-  #connectionClient(): BeeNativeConnect {
-    if (!this.#connect) {
-      this.#connect = this.gateway.ownResource(this.nativeSdk.createConnect());
+  async #read<T>(key: string, operation: () => Promise<T>, deadline: number, signal?: AbortSignal): Promise<T> {
+    assertAuthorizationActive(signal);
+    if (this.now() >= deadline) throw new WalletAuthorizationError('bee-wallet-read-timeout', 'The network read deadline has passed.');
+    let pending = this.#pendingReads.get(key) as Promise<T> | undefined;
+    if (!pending) {
+      pending = Promise.resolve().then(operation);
+      this.#pendingReads.set(key, pending);
+      const release = () => { if (this.#pendingReads.get(key) === pending) this.#pendingReads.delete(key); };
+      void pending.then(release, release);
     }
-
-    return this.#connect;
+    // A timed-out SDK read remains single-flight; retry never spawns a parallel copy.
+    return authorizationRead(pending, Math.min(deadline, this.now() + SINGLE_READ_MS), signal, undefined, this.now);
   }
-
-  async #loadConnection(
-    reference: BeeConnectionReference,
-  ): Promise<StoredConnectionState | null> {
-    const serialized = await this.storage.loadSecureValue(reference);
-
-    if (serialized === null) {
-      return null;
-    }
-
-    const parsed = JSON.parse(serialized) as Record<string, unknown>;
-    const status = parsed.status;
-
-    if (
-      parsed.version !== 1 ||
-      (status !== 'awaiting-approval' &&
-        status !== 'connected' &&
-        status !== 'failed')
-    ) {
-      throw new Error('Secure Bee connection state is invalid.');
-    }
-
-    return {
-      approvalDeadlineMs: typeof parsed.approvalDeadlineMs === 'number' && Number.isFinite(parsed.approvalDeadlineMs) ? parsed.approvalDeadlineMs : null,
-      authorizationContext: typeof parsed.authorizationContext === 'string' ? parsed.authorizationContext : null,
-      version: 1,
-      status,
-      sessionId: requiredText(parsed.sessionId, 'Session ID'),
-      description: requiredText(parsed.description, 'Session description'),
-      clientDhSecret: requiredText(parsed.clientDhSecret, 'DH secret'),
-      createdAt: requiredText(parsed.createdAt, 'Creation time'),
-      expiresAt:
-        typeof parsed.expiresAt === 'number' ? parsed.expiresAt : Number.NaN,
-      sessionStateJson:
-        typeof parsed.sessionStateJson === 'string'
-          ? parsed.sessionStateJson
-          : null,
-      walletName:
-        typeof parsed.walletName === 'string' ? parsed.walletName : null,
-      walletAddress:
-        typeof parsed.walletAddress === 'string' ? parsed.walletAddress : null,
-      credentialReference:
-        typeof parsed.credentialReference === 'string'
-          ? parsed.credentialReference
-          : null,
-      failure:
-        typeof parsed.failure === 'object' && parsed.failure !== null
-          ? (parsed.failure as BeeSdkFailure)
-          : null,
-    };
+  async #direct(reference: string): Promise<DirectConnection> {
+    const state = await this.#load(reference);
+    if (state?.version !== 2 || state.authorizationContext !== miningAuthorizationContext(this.configuration)) throw new Error('The request is missing or belongs to a different application context.');
+    return state;
   }
-
-  #publishConnectionFailure(
-    failure: Readonly<BeeSdkFailure>,
-    state?: StoredConnectionState,
-  ): void {
-    this.#publishConnectionEvent(
-      'bee-wallet-connection-failed',
-      state ?? null,
-      failure,
-    );
+  async #load(reference: string): Promise<Connection | null> {
+    const raw = await this.storage.loadSecureValue(reference);
+    if (raw === null) return null;
+    const state = JSON.parse(raw);
+    if (!state || !['awaiting-approval', 'connected', 'failed'].includes(state.status)) throw new Error('Invalid secure connection state.');
+    if (state.version === 1) return state as LegacyConnection;
+    if (state.version !== 2 || state.kind !== 'direct-mining-key' || !Number.isFinite(state.approvalDeadlineMs)) throw new Error('Invalid secure authorization request.');
+    for (const field of ['walletName', 'publicKey', 'secretKey', 'deepLink', 'appId', 'authorizationContext', 'pendingCredentialReference']) requiredText(state[field], field);
+    return state as DirectConnection;
   }
-
-  #publishConnectionEvent(
-    type:
-      | 'bee-wallet-connection-started'
-      | 'bee-wallet-connected'
-      | 'bee-wallet-connection-failed',
-    state: StoredConnectionState | null,
-    failure: Readonly<BeeSdkFailure> | null = state?.failure ?? null,
-  ): void {
-    this.#eventSequence += 1;
-    const event: CoreEvent<typeof type> = {
-      id: `${type}:${this.#eventSequence}`,
-      occurredAt: this.now(),
-      type,
-      payload: {
-        state:
-          type === 'bee-wallet-connection-failed'
-            ? 'failed'
-            : type === 'bee-wallet-connected'
-              ? 'connected'
-              : 'awaiting-approval',
-        walletName: state?.walletName ?? null,
-        walletAddress: state?.walletAddress ?? null,
-        code: failure?.code ?? null,
-        message: failure?.message ?? null,
-      },
-    };
-
-    try {
-      this.eventPublisher.publish(event);
-    } catch {
-      // Diagnostics cannot control wallet approval flow.
-    }
+  #publish(type: 'bee-wallet-connection-started' | 'bee-wallet-connected' | 'bee-wallet-connection-failed', state: Connection,
+    failure: Readonly<BeeSdkFailure> | null = null): void {
+    const event: CoreEvent<typeof type> = { id: `${type}:${++this.#eventSequence}`, occurredAt: new Date(this.now()).toISOString(), type,
+      payload: { state: type === 'bee-wallet-connection-started' ? 'awaiting-approval' : type === 'bee-wallet-connected' ? 'connected' : 'failed', walletName: state.walletName, walletAddress: state.walletAddress, code: failure?.code ?? null, message: failure?.message ?? null } };
+    try { this.eventPublisher.publish(event); } catch { /* Diagnostics never alter authorization. */ }
   }
 }
-
 export function parseStoredBeeMiningCredential(value: string): Readonly<{
   authorizationContext: string | null;
   walletName: string;

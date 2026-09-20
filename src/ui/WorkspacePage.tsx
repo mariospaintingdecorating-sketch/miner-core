@@ -45,6 +45,7 @@ export interface WorkspacePageProps {
 
 type WalletConnectionCommand = (
   walletId: string,
+  accountName?: string,
 ) => Promise<Readonly<WalletConnectionCommandResult> | null>;
 
 type MiningCommand = (walletId: string) => Promise<boolean>;

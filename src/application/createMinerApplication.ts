@@ -1,3 +1,4 @@
+import type { DirectWalletAuthorizationSdk } from '../services/bee/DirectWalletAuthorizationSdk';
 import { restoreAuthorizationReadiness } from './restoreAuthorizationReadiness';
 import {
   PRODUCTION_TAP_PACING,
@@ -86,6 +87,7 @@ type MinerApplicationStorage = ApplicationStorageContract<RuntimeDiagnostic> &
   Partial<MainEpochStartStorageContract>;
 
 export interface CreateMinerApplicationOptions {
+  readonly walletAuthorizationSdk?: DirectWalletAuthorizationSdk;
   readonly storage?: MinerApplicationStorage;
   readonly configuration?: MinerProductionConfigurationInput;
   readonly beeRuntimeAdapter?: BeeSdkRuntimeAdapter;
@@ -180,7 +182,7 @@ export async function createMinerApplication(
       gateway,
       secureStorage,
       configured,
-      nativeSdk,
+      options.walletAuthorizationSdk,
       eventBus,
     );
   }

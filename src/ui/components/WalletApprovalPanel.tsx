@@ -15,6 +15,7 @@ export function WalletApprovalPanel({
 }: WalletApprovalPanelProps) {
   const { t } = useUiLanguage();
   const expiration = approvalExpiration(approval.expiresAt);
+  const direct = approval.kind === 'mining-key';
 
   return (
     <section
@@ -37,13 +38,13 @@ export function WalletApprovalPanel({
         />
       </div>
       <div className="wallet-approval-copy">
-        <span className="eyebrow">{t('Wallet approval')}</span>
+        <span className="eyebrow">{t(direct ? 'Mining-key authorization' : 'Wallet approval')}</span>
         <h4>{t('Waiting for wallet approval')}</h4>
         <p>
-          {t('Scan the QR code with Acki Nacki Wallet on your phone, or open the registered wallet application on this computer.')}
+          {t(direct ? 'Select the named account in AN Wallet, scan this QR and approve the mining key. Nothing needs to be copied by hand.' : 'Scan the QR code with Acki Nacki Wallet on your phone, or open the registered wallet application on this computer.')}
         </p>
         <p>
-          {t('Approval expires:')}{' '}
+          {t(direct ? 'Automatic checking until:' : 'Approval expires:')}{' '}
           {expiration ? (
             <time dateTime={expiration}>{expiration}</time>
           ) : (
@@ -58,7 +59,7 @@ export function WalletApprovalPanel({
           {t('Open Wallet')}
         </button>
         <small>
-          {t('Core Miner opens only the Acki wallet protocol through the Electron security boundary.')}
+          {t(direct ? 'This QR contains only the public mining key and application ID. The private key stays in encrypted local storage.' : 'Core Miner opens only the Acki wallet protocol through the Electron security boundary.')}
         </small>
       </div>
     </section>

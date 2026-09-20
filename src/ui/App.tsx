@@ -123,7 +123,6 @@ function LocalizedApp({ application }: Pick<AppProps, 'application'>) {
   const runWalletCommand = async (
     command: () => Promise<Readonly<WalletConnectionCommandResult>>,
   ): Promise<Readonly<WalletConnectionCommandResult> | null> => {
-    setCommandPending(true);
     setCommandBanner(null);
 
     try {
@@ -137,8 +136,6 @@ function LocalizedApp({ application }: Pick<AppProps, 'application'>) {
     } catch {
       showCommandBanner(t('The wallet command could not be completed. Review diagnostics and retry.'));
       return null;
-    } finally {
-      setCommandPending(false);
     }
   };
 
@@ -204,8 +201,8 @@ function LocalizedApp({ application }: Pick<AppProps, 'application'>) {
         globalMiningUptime={operatorState.globalMiningUptime}
         beeStatus={operatorState.beeSdk.status}
         commandsDisabled={commandPending}
-        onBeginWalletConnection={(walletId) =>
-          runWalletCommand(() => application.beginWalletConnection(walletId))
+        onBeginWalletConnection={(walletId, accountName) =>
+          runWalletCommand(() => application.beginWalletConnection(walletId, accountName))
         }
         onDisconnectWallet={(walletId) =>
           runWalletCommand(() => application.disconnectWallet(walletId))
@@ -233,7 +230,9 @@ function LocalizedApp({ application }: Pick<AppProps, 'application'>) {
           );
 
           if (registered) {
-            setSelectedWalletId(application.selectedWalletId());
+            const id = application.selectedWalletId();
+            setSelectedWalletId(id);
+            if (id) void runWalletCommand(() => application.beginWalletConnection(id, wallet.name));
           }
 
           return registered;

@@ -37,6 +37,7 @@ export interface WalletsPageProps {
 
 type WalletConnectionCommand = (
   walletId: string,
+  accountName?: string,
 ) => Promise<Readonly<WalletConnectionCommandResult> | null>;
 
 type MiningCommand = (walletId: string) => Promise<boolean>;
@@ -52,10 +53,8 @@ export function WalletsPage({
   commandsDisabled,
   onSelectWallet,
   onBeginWalletConnection,
-  onPrepareWalletMiningCredential,
   onVerifyWalletMiningCredential,
   onDisconnectWallet,
-  onRefreshWalletConnection,
   onStartWalletMining = async () => false,
   onStopWalletMining = async () => false,
   onRegisterWallet,
@@ -68,6 +67,8 @@ export function WalletsPage({
   const [showRegistration, setShowRegistration] = useState(false);
   const [walletName, setWalletName] = useState('');
   const [registrationError, setRegistrationError] = useState<string | null>(null);
+  const [registrationPending, setRegistrationPending] = useState(false);
+  const [accountNames, setAccountNames] = useState<Record<string, string>>({});
   const [walletPendingRemovalId, setWalletPendingRemovalId] = useState<
     string | null
   >(null);
@@ -76,9 +77,6 @@ export function WalletsPage({
     wallets.find((wallet) => wallet.id === selectedWalletId) ?? null;
   const walletPendingRemoval =
     wallets.find((wallet) => wallet.id === walletPendingRemovalId) ?? null;
-  const onboarding = selectedWallet
-    ? onboardingPresentation(selectedWallet, t)
-    : null;
   const connectionCommandsDisabled =
     commandsDisabled ||
     Boolean(selectedWallet?.connection.operationPending) ||
@@ -103,7 +101,8 @@ export function WalletsPage({
   }, [filter, query, sort, wallets]);
   const submitWallet = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const normalizedName = walletName.trim();
+    if (registrationPending) return;
+    const normalizedName = walletName.trim().toLowerCase();
 
     if (normalizedName.length < 2 || normalizedName.length > 80) {
       setRegistrationError(t('Wallet name must contain between 2 and 80 characters.'));
@@ -121,7 +120,10 @@ export function WalletsPage({
     }
 
     setRegistrationError(null);
-    const registered = await onRegisterWallet({ name: normalizedName });
+    setRegistrationPending(true);
+    let registered = false;
+    try { registered = await onRegisterWallet({ name: normalizedName }); }
+    finally { setRegistrationPending(false); }
 
     if (!registered) {
       return;
@@ -168,7 +170,7 @@ export function WalletsPage({
             {t(showRegistration ? 'Cancel' : 'Add wallet')}
           </button>
         }
-        description={t('Add wallets, complete approval, and prepare each wallet for mining.')}
+        description={t('Account name → QR → approve in AN Wallet. Mining keys are handled automatically.')}
         eyebrow={t('Wallet management')}
         title={t('Wallets')}
       />
@@ -176,7 +178,7 @@ export function WalletsPage({
       {showRegistration ? (
         <form className="wallet-registration-panel" onSubmit={(event) => void submitWallet(event)}>
           <label>
-            <span>{t('Wallet name')}</span>
+            <span>{t('AN Wallet account name')}</span>
             <input
               onChange={(event) => {
                 setWalletName(event.target.value);
@@ -184,13 +186,13 @@ export function WalletsPage({
               }}
               maxLength={80}
               minLength={2}
-              placeholder={t('Wallet name')}
+              placeholder={t('Exact account name in AN Wallet')}
               required
               value={walletName}
             />
           </label>
-          <button className="button button-primary" type="submit">
-            {t('Save wallet')}
+          <button className="button button-primary" disabled={registrationPending || commandsDisabled} type="submit">
+            {t(registrationPending ? 'Preparing QR…' : 'Show authorization QR')}
           </button>
           {registrationError ? (
             <p className="wallet-failure-message" role="alert">
@@ -212,7 +214,7 @@ export function WalletsPage({
           <h3>{t(configuration.status === 'ready' ? 'Connection service ready' : 'Configuration required')}</h3>
           <p>
             {configuration.status === 'ready'
-              ? t('Wallet approval and mining credential setup are available.')
+              ? t('One QR authorizes the mining key for your application. No seed or private key is requested.')
               : t('Wallet approval remains blocked until valid local Bee configuration is supplied.')}
           </p>
         </div>
@@ -264,153 +266,47 @@ export function WalletsPage({
       </div>
 
       {selectedWallet ? (
-        <section
-          className="wallet-setup-panel"
-          aria-label={t('Wallet connection setup')}
-          data-onboarding-status={selectedWallet.connection.onboardingStatus}
-        >
+        <section className="wallet-setup-panel wallet-setup-simple" aria-label={t('Wallet connection setup')}
+          data-onboarding-status={selectedWallet.connection.onboardingStatus}>
           <div className="panel-title-row">
-            <div>
-              <span className="eyebrow">{t('Selected wallet')}</span>
-              <h3>{selectedWallet.name}</h3>
-            </div>
-            <StatusBadge label={selectedWallet.connection.onboardingStatus} />
+            <div><span className="eyebrow">{t('Selected wallet')}</span><h3>{selectedWallet.name}</h3></div>
+            <StatusBadge label={selectedWallet.connection.miningReady ? 'ready' : selectedWallet.connection.operationPending ? 'Waiting for approval' : 'Setup required'} />
           </div>
-          <h4 className="wallet-onboarding-title">{onboarding?.title}</h4>
-          <p className="wallet-summary wallet-onboarding-intro">
-            {onboarding?.description}
-          </p>
-          <ol
-            aria-label={t('Wallet onboarding progress')}
-            className="wallet-onboarding-steps"
-          >
-            {ONBOARDING_STAGES.map((stage, index) => {
-              const state = onboardingStepState(selectedWallet, index);
-
-              return (
-                <li
-                  aria-current={state === 'current' ? 'step' : undefined}
-                  data-state={state}
-                  key={stage}
-                >
-                  <span aria-hidden="true">{index + 1}</span>
-                  <strong>{t(stage)}</strong>
-                </li>
-              );
-            })}
-          </ol>
-          <div className="wallet-setup-summary">
-            <SetupFact
-              label={t('Wallet connection')}
-              value={connectionSetupLabel(selectedWallet, t)}
-              ready={selectedWallet.connection.phase === 'connected'}
-            />
-            <SetupFact
-              label={t('Mining credential')}
-              value={storedStateLabel(selectedWallet.connection.miningCredentialStored, t)}
-              ready={selectedWallet.connection.miningCredentialStored === true}
-            />
-            <SetupFact
-              label={t('Ready for mining')}
-              value={t(selectedWallet.connection.miningReady ? 'Ready' : 'Not ready')}
-              ready={selectedWallet.connection.miningReady}
-            />
-          </div>
-          {selectedWallet.connection.lastFailureCode ? (
-            <p className="wallet-failure-message" role="alert">
-              <strong>{t('Wallet setup needs attention.')}</strong>
-              <span>{walletFailureMessage(selectedWallet, t)}</span>
-            </p>
+          <p className="wallet-summary" role="status">{authorizationMessage(selectedWallet, t)}</p>
+          {!selectedWallet.connection.miningReady ? (
+            <label className="wallet-account-name">
+              <span>{t('AN Wallet account name')}</span>
+              <input autoComplete="off" spellCheck={false} maxLength={128}
+                disabled={selectedWallet.connection.operationPending || Boolean(selectedWallet.connection.approval)}
+                value={selectedWallet.connection.approval?.accountName ?? accountNames[selectedWallet.id] ?? selectedWallet.name}
+                onChange={event => setAccountNames(current => ({ ...current, [selectedWallet.id]: event.target.value }))} />
+              <small>{t('Use the existing account name, not a new nickname. Select this same account before scanning.')}</small>
+            </label>
           ) : null}
           {selectedWallet.connection.approval ? (
-            <WalletApprovalPanel
-              approval={selectedWallet.connection.approval}
-              walletId={selectedWallet.id}
-              walletName={selectedWallet.name}
-            />
-          ) : selectedWallet.connection.onboardingStatus ===
-            'awaiting-connection' ? (
-            <p className="wallet-summary" role="status">
-              {t('The approval request is no longer available in this application session. If it expired before scanning, disconnect and reconnect the wallet to create a new request.')}
-            </p>
+            <WalletApprovalPanel approval={selectedWallet.connection.approval} walletId={selectedWallet.id}
+              walletName={selectedWallet.connection.approval.accountName ?? (accountNames[selectedWallet.id]?.trim().toLowerCase() || selectedWallet.name)} />
           ) : null}
-          {selectedWallet.connection.operationPending ? (
-            <p className="wallet-summary" role="status">
-              {operationMessage(
-                selectedWallet.connection.operationStep,
-                selectedWallet.connection.onboardingStatus,
-                t,
-              )}
-            </p>
-          ) : null}
-          <div
-            className="wallet-actions"
-            aria-label={t('{wallet} connection actions', { wallet: selectedWallet.name })}
-          >
-            {selectedWallet.connection.onboardingStatus === 'disconnected' ? (
-              <button
-                className="button button-primary"
-                disabled={connectionCommandsDisabled}
-                onClick={() => void runConnectionCommand(onBeginWalletConnection)}
-                type="button"
-              >
-                {t('Connect wallet')}
+          <div className="wallet-actions" aria-label={t('{wallet} connection actions', { wallet: selectedWallet.name })}>
+            {!selectedWallet.connection.miningReady && !selectedWallet.connection.operationPending ? (
+              <button className="button button-primary" disabled={connectionCommandsDisabled || walletRuntimeActive(selectedWallet.runtimeStatus)}
+                onClick={() => void onBeginWalletConnection(selectedWallet.id, accountNames[selectedWallet.id]?.trim() || undefined)} type="button">
+                {t(selectedWallet.connection.connectionStateStored ? 'Resume authorization' : 'Show authorization QR')}
               </button>
             ) : null}
-            {selectedWallet.connection.onboardingStatus === 'connected' ||
-            (selectedWallet.connection.onboardingStatus === 'failed' &&
-              failedDuringMiningCredentialPreparation(selectedWallet)) ? (
-              <button
-                className="button button-primary"
-                disabled={connectionCommandsDisabled}
-                onClick={() => void runConnectionCommand(onPrepareWalletMiningCredential)}
-                type="button"
-              >
-                {selectedWallet.connection.onboardingStatus === 'failed'
-                  ? t('Retry mining credential')
-                  : t('Prepare mining credential')}
+            {selectedWallet.connection.operationStep === 'authorize-mining-key' ? (
+              <button className="button button-secondary" onClick={() => void runConnectionCommand(onDisconnectWallet)} type="button">
+                {t('Pause verification')}
               </button>
             ) : null}
-            {((selectedWallet.connection.onboardingStatus === 'ready' || selectedWallet.connection.onboardingStatus ===
-              'awaiting-mining-key-approval') &&
-              selectedWallet.connection.miningCredentialStored === true) ||
-            (selectedWallet.connection.onboardingStatus === 'failed' &&
-              failedDuringMiningCredentialPropagation(selectedWallet)) ? (
-              <button
-                className="button button-primary"
-                disabled={connectionCommandsDisabled}
-                onClick={() =>
-                  void runConnectionCommand(onVerifyWalletMiningCredential)
-                }
-                type="button"
-              >
-                {t(selectedWallet.connection.onboardingStatus === 'failed'
-                  ? 'Retry propagation verification'
-                  : 'Verify propagation')}
-              </button>
-            ) : null}
-            <button
-              className="button button-quiet"
-              disabled={connectionCommandsDisabled}
-              onClick={() => void runConnectionCommand(onRefreshWalletConnection)}
-              type="button"
-            >
-              {t('Refresh state')}
-            </button>
-            {selectedWallet.connection.phase !== 'disconnected' ? (
-              <button
-                className="button button-danger"
-                disabled={connectionCommandsDisabled}
-                onClick={() => void runConnectionCommand(onDisconnectWallet)}
-                type="button"
-              >
-                {selectedWallet.connection.onboardingStatus === 'failed' &&
-                !failedDuringMiningCredentialSetup(selectedWallet)
-                  ? t('Reset wallet connection')
-                  : t('Disconnect')}
+            {selectedWallet.connection.miningCredentialStored && !selectedWallet.connection.operationPending ? (
+              <button className="button button-quiet" disabled={connectionCommandsDisabled || walletRuntimeActive(selectedWallet.runtimeStatus)}
+                onClick={() => void runConnectionCommand(onVerifyWalletMiningCredential)} type="button">
+                {t('Check saved key')}
               </button>
             ) : null}
           </div>
+          <small className="wallet-summary">{t('Retry keeps the same key. Mining starts only when you press Start.')}</small>
         </section>
       ) : null}
 
@@ -682,226 +578,15 @@ function formatRewardTime(value: string, language: UiLanguage): string {
       ).format(date);
 }
 
-function storedStateLabel(value: boolean | null, t: Translate): string {
-  return t(value === null ? 'Unknown' : value ? 'Stored securely' : 'Not stored');
-}
-
-function connectionSetupLabel(wallet: WalletPresentation, t: Translate): string {
-  if (wallet.connection.phase === 'connected') {
-    return t('Approved');
-  }
-
-  if (wallet.connection.phase === 'awaiting-approval') {
-    return wallet.connection.onboardingStatus === 'awaiting-mining-key-approval'
-      ? t('Mining key pending')
-      : t('Wallet pending');
-  }
-
-  return t(wallet.connection.phase === 'failed' ? 'Needs attention' : 'Not connected');
-}
-
-function SetupFact({
-  label,
-  value,
-  ready,
-}: {
-  readonly label: string;
-  readonly value: string;
-  readonly ready: boolean;
-}) {
-  return (
-    <div className={ready ? 'setup-fact setup-fact-ready' : 'setup-fact'}>
-      <span aria-hidden="true">{ready ? '✓' : '•'}</span>
-      <div><small>{label}</small><strong>{value}</strong></div>
-    </div>
-  );
-}
-
-const ONBOARDING_STAGES = Object.freeze([
-  'Local wallet created',
-  'Connection pending',
-  'Wallet approved',
-  'Mining credential ready',
-  'Ready for mining',
-]);
-
-type OnboardingStepState = 'upcoming' | 'current' | 'completed' | 'failed';
-
-function onboardingPresentation(wallet: WalletPresentation, t: Translate): {
-  readonly title: string;
-  readonly description: string;
-} {
-  switch (wallet.connection.onboardingStatus) {
-    case 'disconnected':
-      return {
-        title: t('Local wallet created'),
-        description: t('The wallet record is ready. Connect it to begin the explicit Bee wallet approval flow.'),
-      };
-    case 'awaiting-connection':
-      return {
-        title: t('Connection pending'),
-        description: t('Approve the request in the wallet application. Core Miner is already waiting for wallet_hello and will continue automatically.'),
-      };
-    case 'connected':
-      return {
-        title: t('Wallet approved'),
-        description: t('The wallet connection is approved. A separate mining credential must still be prepared.'),
-      };
-    case 'awaiting-mining-key-approval':
-      return {
-        title: t(wallet.connection.miningCredentialStored
-          ? 'Mining credential awaiting verification'
-          : 'Mining credential approval pending'),
-        description: t(wallet.connection.miningCredentialStored
-          ? 'The mining credential request completed. Verify network propagation before mining.'
-          : 'Approve the mining credential request in the wallet application. Mining remains stopped.'),
-      };
-    case 'propagating-mining-key':
-      return {
-        title: t('Waiting for mining-key propagation'),
-        description: t('The credential is stored securely. Bee propagation verification must finish before mining is ready.'),
-      };
-    case 'ready':
-      return {
-        title: t('Ready for mining'),
-        description: t('Wallet onboarding is complete. Mining is still started only by an explicit operator command.'),
-      };
-    case 'failed':
-      return {
-        title: t('Wallet setup needs attention'),
-        description: failedDuringMiningCredentialSetup(wallet)
-          ? t('The mining credential did not complete. Review the safe failure code and retry this step.')
-          : t('The approval request was cleared safely. Reset the connection, then create a new approval request.'),
-      };
-  }
-}
-
-function onboardingStepState(
-  wallet: WalletPresentation,
-  stepIndex: number,
-): OnboardingStepState {
-  const currentStep = onboardingStepIndex(wallet);
-
-  if (stepIndex < currentStep) {
-    return 'completed';
-  }
-
-  if (stepIndex > currentStep) {
-    return 'upcoming';
-  }
-
-  return wallet.connection.onboardingStatus === 'failed' ? 'failed' : 'current';
-}
-
-function onboardingStepIndex(wallet: WalletPresentation): number {
-  switch (wallet.connection.onboardingStatus) {
-    case 'disconnected':
-      return 0;
-    case 'awaiting-connection':
-      return 1;
-    case 'connected':
-      return 2;
-    case 'awaiting-mining-key-approval':
-    case 'propagating-mining-key':
-      return 3;
-    case 'ready':
-      return 4;
-    case 'failed':
-      if (wallet.connection.miningCredentialStored) {
-        return 3;
-      }
-
-      return failedDuringMiningCredentialSetup(wallet) ? 2 : 1;
-  }
-}
-
-function failedDuringMiningCredentialSetup(
-  wallet: WalletPresentation,
-): boolean {
-  const failureCode = wallet.connection.lastFailureCode;
-
-  if (failureCode?.includes('mining-credential')) {
-    return true;
-  }
-
-  if (failureCode?.includes('wallet-hello-read')) {
-    return false;
-  }
-
-  if (failureCode?.includes('wallet-approval')) {
-    return false;
-  }
-
-  return wallet.walletAddress !== null;
-}
-
-function failedDuringMiningCredentialPreparation(
-  wallet: WalletPresentation,
-): boolean {
-  return (
-    failedDuringMiningCredentialSetup(wallet) &&
-    !failedDuringMiningCredentialPropagation(wallet)
-  );
-}
-
-function failedDuringMiningCredentialPropagation(
-  wallet: WalletPresentation,
-): boolean {
-  return wallet.connection.lastFailureCode?.includes('propagation') === true;
-}
-
-function walletFailureMessage(
-  wallet: WalletPresentation,
-  t: Translate,
-): string {
+function authorizationMessage(wallet: WalletPresentation, t: Translate): string {
+  if (wallet.connection.miningReady) return t('The mining key is confirmed on-chain. Ready for mining.');
+  if (wallet.connection.operationPending) return t('Approve the QR in the named AN Wallet account. Confirmation is checked automatically.');
   const code = wallet.connection.lastFailureCode ?? '';
-
-  if (code.includes('approval-timeout')) {
-    return t('Wallet approval timed out. Reset the connection and create a new request.');
-  }
-
-  if (code.includes('wallet-hello-read')) {
-    return t('Core Miner could not read wallet_hello from the network. The wallet did not report a rejection. Reset the connection and try again.');
-  }
-
-  if (code.includes('wallet-approval')) {
-    return t('Wallet approval failed. Reset the connection and try again.');
-  }
-
-  if (code.includes('propagation')) {
-    return t('Mining-key propagation was not confirmed. Retry verification.');
-  }
-
-  if (code.includes('mining-credential')) {
-    return t('Mining-key preparation failed. Retry this onboarding step.');
-  }
-
-  if (code.includes('secure-storage')) {
-    return t('Secure storage is unavailable. Review diagnostics.');
-  }
-
-  return t('Wallet setup failed. Review diagnostics and retry.');
-}
-
-function operationMessage(
-  operation: WalletPresentation['connection']['operationStep'],
-  onboardingStatus: WalletPresentation['connection']['onboardingStatus'],
-  t: Translate,
-): string {
-  switch (operation) {
-    case 'begin-connection':
-      return onboardingStatus === 'awaiting-connection'
-        ? t('Waiting for wallet approval. Connection completes automatically after wallet_hello.')
-        : t('Preparing the wallet connection request.');
-    case 'prepare-mining-credential':
-      return t('Generating mining keys and waiting for wallet authorization.');
-    case 'verify-mining-credential':
-      return t('Waiting for mining-key propagation confirmation.');
-    case 'disconnect':
-      return t('Disconnecting the wallet safely.');
-    case 'refresh-state':
-      return t('Refreshing the public wallet state.');
-    case null:
-      return t('A wallet operation is in progress.');
-  }
+  if (code.includes('address-mismatch') || code.includes('already-registered')) return t('The account does not match this profile, or it is already registered. No existing key was replaced.');
+  if (code.includes('context-mismatch')) return t('The saved request belongs to another account or application. Its key was not replaced.');
+  if (code.includes('account-name-invalid')) return t('Enter the exact existing account name from AN Wallet.');
+  if (code.includes('cancelled')) return t('Verification paused. Resume to display the same QR and check again.');
+  if (code.includes('read') || code.includes('timeout') || code.includes('wallet-hello')) return t('The network read did not complete. This is not a wallet rejection. Resume authorization; no reset is needed.');
+  if (code) return t('Approval is not confirmed yet. Approve the QR, then resume verification with the same key.');
+  return t('Account name → QR → approve in AN Wallet. Mining keys are handled automatically.');
 }

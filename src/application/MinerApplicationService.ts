@@ -245,6 +245,7 @@ export interface MinerApplication {
   ): Promise<Readonly<ShadowMiningPreflightResult>>;
   beginWalletConnection(
     walletId: string,
+    accountName?: string,
   ): Promise<Readonly<WalletConnectionCommandResult>>;
   prepareWalletMiningCredential(
     walletId: string,
@@ -1088,10 +1089,12 @@ export class MinerApplicationService implements MinerApplication {
 
   beginWalletConnection(
     walletId: string,
+    accountName?: string,
   ): Promise<Readonly<WalletConnectionCommandResult>> {
     return this.#walletConnections.beginWalletConnection(
       walletId,
       this.#selectedWalletId,
+      accountName,
     );
   }
   async prepareWalletMiningCredential(

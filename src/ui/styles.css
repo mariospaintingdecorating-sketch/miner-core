@@ -1367,3 +1367,11 @@ dd { margin: 5px 0 0; color: #cbd7e6; font-size: 11px; overflow-wrap: anywhere; 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 1ms !important; animation-iteration-count: 1 !important; transition-duration: 1ms !important; }
 }
+
+/* One-step mining-key approval, scoped to wallet management. */
+.wallet-setup-simple { max-width: 920px; margin-inline: auto; }
+.wallet-account-name { display: grid; gap: 8px; margin: 16px 0; }
+.wallet-account-name input { width: min(100%, 520px); padding: 12px 14px; border-radius: 10px; border: 1px solid var(--border, #29465f); background: var(--surface, #0b1927); color: inherit; font: inherit; }
+.wallet-account-name small { opacity: .75; }
+.wallet-setup-simple .wallet-approval-card { margin-top: 18px; }
+.wallet-setup-simple .panel-title-row h3 { overflow-wrap: anywhere; }

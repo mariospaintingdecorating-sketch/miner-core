@@ -16,7 +16,7 @@ function check(name, fn) { fn(); report.checks.push({ name, passed: true }); }
 try {
   check('packaged application version and identity', () => {
     const pkg = JSON.parse(read('package.json'));
-    assert.equal(pkg.version, '0.2.1-beta');
+    assert.equal(pkg.version, '0.2.2-beta');
     assert.equal(pkg.productName, 'Core Miner');
     assert.equal(pkg.dependencies['@teamgosh/bee-sdk'], '5.1.1');
   });
@@ -52,7 +52,7 @@ try {
     });
   });
   const audit = cp.spawnSync(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['audit', '--omit=dev', '--json'], { encoding: 'utf8', shell: process.platform === 'win32', timeout: 60000 });
-  fs.writeFileSync(path.join(out, 'Core-Miner-0.2.1-production-audit.json'), audit.stdout || JSON.stringify({ error: audit.error?.message || audit.stderr }));
+  fs.writeFileSync(path.join(out, 'Core-Miner-0.2.2-production-audit.json'), audit.stdout || JSON.stringify({ error: audit.error?.message || audit.stderr }));
   try { report.productionAudit = JSON.parse(audit.stdout).metadata?.vulnerabilities ?? { unavailable: true }; }
   catch { report.productionAudit = { unavailable: true }; }
   report.passed = true;
@@ -61,6 +61,6 @@ try {
   report.error = String(error.stack || error);
   process.exitCode = 1;
 } finally {
-  fs.writeFileSync(path.join(out, 'Core-Miner-0.2.1-package-verification.json'), JSON.stringify(report, null, 2));
+  fs.writeFileSync(path.join(out, 'Core-Miner-0.2.2-package-verification.json'), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
 }
