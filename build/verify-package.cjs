@@ -9,7 +9,7 @@ const root = path.resolve('release/win-unpacked/resources');
 const archive = path.join(root, 'app.asar');
 const out = path.resolve('release');
 const sha = (b) => crypto.createHash('sha256').update(b).digest('hex');
-const read = (name) => asar.extractFile(archive, name);
+const read = (name) => asar.extractFile(archive, name.split('/').join(path.sep));
 const entries = asar.listPackage(archive).map((s) => s.replaceAll('\\', '/').replace(/^\//, ''));
 const report = { checks: [], productionAudit: null, realWalletsTested: false, mainnetMiningTested: false };
 function check(name, fn) { fn(); report.checks.push({ name, passed: true }); }
