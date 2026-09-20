@@ -116,7 +116,7 @@ export class WalletMiningWorkerProductAdapter {
     const session = token ? this.#sessions.get(token) : null;
     const executionVisible = Boolean(session && !session.sessionClosed);
     const completedTapCount = snapshot.queuedLocalTaps;
-    const targetTapCount = DEFAULT_WALLET_MINING_WORKER_OPTIONS.targetTaps;
+    const targetTapCount = snapshot.configuredTargetTaps ?? DEFAULT_WALLET_MINING_WORKER_OPTIONS.targetTaps;
     const errorCode = snapshot.errorCategory ?? snapshot.failureStage;
 
     return Object.freeze({
@@ -136,7 +136,7 @@ export class WalletMiningWorkerProductAdapter {
               targetTapCount,
               remainingTapCount: Math.max(0, targetTapCount - completedTapCount),
             }),
-            approximateIntervalMs:
+            approximateIntervalMs: snapshot.configuredTapIntervalMs ??
               DEFAULT_WALLET_MINING_WORKER_OPTIONS.tapIntervalMs,
             jitterEnabled:
               DEFAULT_WALLET_MINING_WORKER_OPTIONS.tapJitterRangeMs > 0,

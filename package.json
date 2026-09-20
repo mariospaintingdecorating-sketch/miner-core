@@ -1,7 +1,7 @@
 {
   "name": "miner-core",
   "productName": "Core Miner",
-  "version": "0.1.0-beta.1",
+  "version": "0.2.1-beta",
   "private": true,
   "description": "Core Miner desktop mining operator application",
   "author": {
@@ -31,7 +31,7 @@
   "dependencies": {
     "@eversdk/core": "^1.34.1",
     "@eversdk/lib-node": "^1.34.0",
-    "@teamgosh/bee-sdk": "4.0.0",
+    "@teamgosh/bee-sdk": "5.1.1",
     "qrcode.react": "^4.2.0",
     "react": "19.2.8",
     "react-dom": "19.2.8"
@@ -52,7 +52,7 @@
   "build": {
     "appId": "com.msii.miner-core",
     "productName": "Core Miner",
-    "artifactName": "Core-Miner-${version}-${arch}-Setup.${ext}",
+    "artifactName": "Core Miner 0.2.1 beta setup.${ext}",
     "asar": true,
     "asarUnpack": [
       "node_modules/@eversdk/lib-node/**/*.node"

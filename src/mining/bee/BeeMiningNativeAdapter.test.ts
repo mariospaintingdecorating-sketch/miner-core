@@ -10,7 +10,7 @@ import type {
 import { MiningNativeAdapterError } from '../WalletMiningRuntime';
 import {
   BeeMiningNativeAdapter,
-  type Bee4MiningNativeSdkAccess,
+  type BeeMiningNativeSdkAccess,
 } from './BeeMiningNativeAdapter';
 
 const INPUT: Readonly<NativeMinerCreationInput> = Object.freeze({
@@ -87,7 +87,7 @@ class FakeBeeMiner implements BeeNativeMiner {
   }
 }
 
-class FakeBee4Access implements Bee4MiningNativeSdkAccess {
+class FakeBeeSdkAccess implements BeeMiningNativeSdkAccess {
   initializeCalls = 0;
   createCalls: CreateCall[] = [];
   createError: unknown = null;
@@ -118,12 +118,12 @@ class FakeBee4Access implements Bee4MiningNativeSdkAccess {
 }
 
 async function fixture(): Promise<{
-  readonly access: FakeBee4Access;
+  readonly access: FakeBeeSdkAccess;
   readonly miner: FakeBeeMiner;
   readonly handle: Awaited<ReturnType<BeeMiningNativeAdapter['createMiner']>>;
 }> {
   const miner = new FakeBeeMiner();
-  const access = new FakeBee4Access(miner);
+  const access = new FakeBeeSdkAccess(miner);
   const handle = await new BeeMiningNativeAdapter(access).createMiner(INPUT);
   return { access, miner, handle };
 }
@@ -167,7 +167,7 @@ describe('BeeMiningNativeAdapter operations', () => {
     const miner = new FakeBeeMiner();
     miner.canStartValue = false;
     const handle = await new BeeMiningNativeAdapter(
-      new FakeBee4Access(miner),
+      new FakeBeeSdkAccess(miner),
     ).createMiner(INPUT);
     expect(handle.canStart()).toBe(false);
   });
@@ -229,7 +229,7 @@ describe('BeeMiningNativeAdapter operations', () => {
   });
 
   it('initializes Bee access once when creating multiple native miners', async () => {
-    const access = new FakeBee4Access();
+    const access = new FakeBeeSdkAccess();
     const adapter = new BeeMiningNativeAdapter(access);
     await adapter.createMiner(INPUT);
     await adapter.createMiner(INPUT);
@@ -575,7 +575,7 @@ describe('Bee adapter isolation invariants', () => {
   });
 
   it('does not mutate endpoint input and gives Bee an isolated array', async () => {
-    class MutatingAccess extends FakeBee4Access {
+    class MutatingAccess extends FakeBeeSdkAccess {
       override async createMiner(
         endpoints: readonly string[],
         appId: string,
@@ -602,7 +602,7 @@ describe('Bee adapter isolation invariants', () => {
   });
 
   it('does not retry Miner.new after a creation failure', async () => {
-    const access = new FakeBee4Access();
+    const access = new FakeBeeSdkAccess();
     access.createError = new Error('synthetic create failure');
     await expect(
       new BeeMiningNativeAdapter(access).createMiner(INPUT),
@@ -611,7 +611,7 @@ describe('Bee adapter isolation invariants', () => {
   });
 
   it('classifies an Account 205 HTML response as a recoverable network prepare failure', async () => {
-    const access = new FakeBee4Access();
+    const access = new FakeBeeSdkAccess();
     access.createError = new Error(
       'Get miner details (KitError { module: Account, code: 205, message: Invalid server response: <!DOCTYPE html><html>temporary upstream page</html> })',
     );
@@ -666,7 +666,7 @@ describe('Bee adapter isolation invariants', () => {
   it('does not add hidden retry timers or asynchronous retries', async () => {
     vi.useFakeTimers();
     try {
-      const access = new FakeBee4Access();
+      const access = new FakeBeeSdkAccess();
       access.createError = new Error('synthetic failure');
       await expect(
         new BeeMiningNativeAdapter(access).createMiner(INPUT),

@@ -10,7 +10,7 @@ interface BrowserCompatibleGlobal {
 }
 
 /**
- * Bee 4 uses wasm-bindgen's web_sys::window() even inside Electron's Node
+ * Bee SDK uses wasm-bindgen's web_sys::window() even inside Electron's Node
  * utility process. Node already supplies fetch and Web Crypto; expose that
  * same global under the two browser aliases Bee resolves.
  */

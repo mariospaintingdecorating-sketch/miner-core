@@ -115,6 +115,7 @@ interface GenerationOwnership {
   releaseIdleLease: (() => void) | null;
   releaseSubmissionGuard: (() => void) | null;
   postSubmissionPermit: Promise<() => void> | null;
+  tapDeadlineMs: number | null;
   tapTimer: unknown | null;
   nativeSessionWatchdogTimer: unknown | null;
   terminalGraceTimer: unknown | null;
@@ -316,6 +317,8 @@ export class WalletMiningWorker implements WalletMiningRuntime {
       generationToken: generation?.token ?? null,
       miniEpoch: generation?.miniEpoch ?? null,
       desiredMining: this.#desiredMining,
+      configuredTapIntervalMs: this.#options.tapIntervalMs,
+      configuredTargetTaps: this.#options.targetTaps,
       queuedLocalTaps: generation?.queuedLocalTaps ?? 0,
       nativeComputedTaps: generation?.nativeComputedTaps ?? 0,
       computationCompletedTaps:
@@ -405,6 +408,10 @@ export class WalletMiningWorker implements WalletMiningRuntime {
 
     this.#clearAutomaticEpochStart();
     this.#clearPrepareRetry(false);
+    if (!this.#hasAdmissionWindow(miniEpoch)) {
+      this.#transition('WAITING_EPOCH');
+      return startResult('CANCELLED', this.#generation);
+    }
     if (this.#prepareRetryMiniEpoch !== miniEpoch) {
       this.#prepareRetryMiniEpoch = miniEpoch;
       this.#prepareRetryCount = 0;
@@ -446,6 +453,14 @@ export class WalletMiningWorker implements WalletMiningRuntime {
         this.#releaseIdleLease(generation);
         this.#reportPrepareOutcome(generation, null);
         generation.allocationSettled.resolve(undefined);
+        await generation.completion.promise;
+        return startResult('CANCELLED', generation);
+      }
+      if (!this.#hasAdmissionWindow(miniEpoch)) {
+        this.#releaseIdleLease(generation);
+        this.#reportPrepareOutcome(generation, null);
+        generation.allocationSettled.resolve(undefined);
+        this.#terminalize(generation, 'CANCELLED', null);
         await generation.completion.promise;
         return startResult('CANCELLED', generation);
       }
@@ -537,6 +552,15 @@ export class WalletMiningWorker implements WalletMiningRuntime {
       return startResult('FAILED', generation);
     }
 
+    if (!this.#owns(generation) || generation.terminalOutcome || !this.#desiredMining ||
+        !this.#hasAdmissionWindow(miniEpoch)) {
+      this.#releaseIdleLease(generation);
+      this.#reportPrepareOutcome(generation, null);
+      if (!generation.terminalOutcome) this.#terminalize(generation, 'CANCELLED', null);
+      await generation.completion.promise;
+      return startResult('CANCELLED', generation);
+    }
+
     if (!canStart) {
       this.#releaseIdleLease(generation);
       generation.backoffAfterDisposal = true;
@@ -587,6 +611,13 @@ export class WalletMiningWorker implements WalletMiningRuntime {
         await generation.completion.promise;
         return startResult('CANCELLED', generation);
       }
+      if (!this.#hasAdmissionWindow(miniEpoch)) {
+        this.#releaseIdleLease(generation);
+        this.#reportStartOutcome(generation, null);
+        this.#terminalize(generation, 'CANCELLED', null);
+        await generation.completion.promise;
+        return startResult('CANCELLED', generation);
+      }
       if (this.#lastNativeStartMiniEpoch === miniEpoch) {
         this.#releaseIdleLease(generation);
         const duplicateStartFailure = failure(
@@ -608,6 +639,7 @@ export class WalletMiningWorker implements WalletMiningRuntime {
       // A thrown native start is ambiguous. Claim the epoch before invoking it
       // so a retry cannot accidentally create two productive sessions.
       this.#lastNativeStartMiniEpoch = miniEpoch;
+      generation.tapDeadlineMs = this.#timer.nowMs() + durationMs;
       await nativeMiner.start(durationMs, (callback) => {
         this.#handleNativeCallback(generation.token, callback);
       });
@@ -640,11 +672,33 @@ export class WalletMiningWorker implements WalletMiningRuntime {
     }
 
     if (this.#state === 'MINING' && this.#owns(generation)) {
-      void this.#queueNextTap(generation);
+      if (this.#options.firstTapDelayMs > 0) {
+        generation.tapTimer = this.#timer.setTimeout(() => {
+          generation.tapTimer = null;
+          void this.#queueNextTap(generation);
+        }, this.#options.firstTapDelayMs);
+      } else {
+        void this.#queueNextTap(generation);
+      }
     }
     return generation.terminalOutcome === 'CANCELLED'
       ? startResult('CANCELLED', generation)
       : startResult('STARTED', generation);
+  }
+
+  #hasAdmissionWindow(miniEpoch: string): boolean {
+    const snapshot = this.dependencies.epochSource.snapshot();
+    if (snapshot.miniEpoch !== miniEpoch) return false;
+    if (this.#options.requireFreshClock) {
+      const observedAt = snapshot.observedAtMs;
+      const age = typeof observedAt === 'number' ? this.#timer.nowMs() - observedAt : NaN;
+      if (!Number.isFinite(age) || age < 0 || age > 60_000) return false;
+    }
+    if (this.#options.minimumStartWindowMs <= 0) return true;
+    const minimum = Math.max(this.#options.minimumStartWindowMs,
+      this.#options.sessionDurationMs + this.#options.epochEndSafetyMarginMs);
+    return snapshot.remainingMs !== null && Number.isFinite(snapshot.remainingMs) &&
+      snapshot.remainingMs >= minimum;
   }
 
   async #readBaselineBestEffort(generation: GenerationOwnership): Promise<void> {
@@ -710,7 +764,8 @@ export class WalletMiningWorker implements WalletMiningRuntime {
     if (
       !this.#owns(generation) ||
       this.#state !== 'MINING' ||
-      generation.queuedLocalTaps >= this.#options.targetTaps
+      generation.queuedLocalTaps >= this.#options.targetTaps ||
+      (generation.tapDeadlineMs !== null && this.#timer.nowMs() >= generation.tapDeadlineMs)
     ) {
       return;
     }
@@ -1295,10 +1350,9 @@ export class WalletMiningWorker implements WalletMiningRuntime {
     const retryKind = isQueueFailure(generation.terminalFailure)
       ? 'QUEUE'
       : 'ORDINARY';
-    if (this.#prepareRetryKind !== retryKind) {
-      this.#prepareRetryKind = retryKind;
-      this.#prepareRetryCount = 0;
-    }
+    // One bounded per-epoch retry budget; alternating NETWORK/QUEUE errors
+    // must not reset the counter and create an endless preparation loop.
+    this.#prepareRetryKind = retryKind;
     const retryDelays = retryKind === 'QUEUE'
       ? QUEUE_PREPARE_RETRY_DELAYS_MS
       : PREPARE_RETRY_DELAYS_MS;
@@ -1331,10 +1385,8 @@ export class WalletMiningWorker implements WalletMiningRuntime {
         return;
       }
 
-      const miniEpoch =
-        this.#pendingMiniEpoch ??
-        this.dependencies.epochSource.snapshot().miniEpoch ??
-        generation.miniEpoch;
+      const miniEpoch = this.dependencies.epochSource.snapshot().miniEpoch;
+      if (!miniEpoch) return;
       void this.#beginGeneration(identity, miniEpoch);
     }, delayMs);
   }
@@ -1721,6 +1773,7 @@ function createGeneration(
     releaseIdleLease: null,
     releaseSubmissionGuard: null,
     postSubmissionPermit: null,
+    tapDeadlineMs: null,
     tapTimer: null,
     nativeSessionWatchdogTimer: null,
     terminalGraceTimer: null,
@@ -2048,6 +2101,9 @@ function validateOptions(options: Readonly<WalletMiningWorkerOptions>): void {
     throw new RangeError('Wallet mining session duration must be at least 1000 ms.');
   }
   if (
+    !Number.isFinite(options.firstTapDelayMs) || options.firstTapDelayMs < 0 ||
+    !Number.isFinite(options.minimumStartWindowMs) || options.minimumStartWindowMs < 0 ||
+    typeof options.requireFreshClock !== 'boolean' ||
     !Number.isFinite(options.epochEndSafetyMarginMs) ||
     options.epochEndSafetyMarginMs < 0 ||
     !Number.isFinite(options.fleetStartSlotIndex) ||

@@ -43,6 +43,9 @@ function wallet(walletId = 'wallet-a'): Readonly<WalletSnapshot> {
 function serializedCredential(walletId = 'wallet-a'): string {
   return JSON.stringify({
     version: 1,
+    appId: 'synthetic-product-app-id',
+    verifiedAppId: 'synthetic-product-app-id',
+    verifiedAt: '2026-09-20T00:00:00.000Z',
     walletName: `canonical-${walletId}`,
     walletAddress: `0:${walletId}-address`,
     minerAddress: SYNTHETIC_MINER_ADDRESS,
@@ -237,5 +240,15 @@ describe('shared disabled product adapters', () => {
     expect(serialized).not.toContain(SYNTHETIC_SECRET);
     expect(serialized).not.toContain('rawCredential');
     expect(destination.events[0]).not.toHaveProperty('secretKey');
+  });
+});
+
+describe('mining identity authorization context', () => {
+  it.each([{}, { appId: 'old', verifiedAppId: 'old', verifiedAt: '2026-09-20' },
+    { appId: 'synthetic-product-app-id', verifiedAppId: null }])('blocks a legacy or mismatched verification (%j)', async (fields) => {
+    const raw = JSON.parse(serializedCredential());
+    delete raw.appId; delete raw.verifiedAppId; delete raw.verifiedAt;
+    await expect(identityFixture({ credential: JSON.stringify({ ...raw, ...fields }) }).adapter.resolve('wallet-a'))
+      .rejects.toMatchObject({ code: 'MINING_AUTHORIZATION_CONTEXT_UNVERIFIED' });
   });
 });

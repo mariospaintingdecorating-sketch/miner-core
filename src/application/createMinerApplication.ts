@@ -1,3 +1,5 @@
+import { PRODUCTION_MINING_SESSION_POLICY } from '../mining/product/MiningSessionPolicy';
+import { restoreWalletAuthorization } from './restoreWalletAuthorization';
 import {
   PRODUCTION_TAP_PACING,
   type TapPacingSource,
@@ -61,7 +63,7 @@ import { WALLET_MINING_RUNTIME_CONSTRUCTIBILITY_INSPECTOR } from '../mining/comp
 import { WalletMiningRuntimeFactory } from '../mining/composition/WalletMiningRuntimeFactory';
 import {
   BeeMiningNativeAdapter,
-  TeamGoshBee4MiningNativeSdkAccess,
+  TeamGoshBeeMiningNativeSdkAccess,
 } from '../mining/bee/BeeMiningNativeAdapter';
 import { ElectronBeeMiningNativeAdapter } from '../mining/bee/ElectronBeeMiningNativeAdapter';
 import type { MiningNativeAdapter } from '../mining/WalletMiningRuntime';
@@ -122,10 +124,13 @@ export async function createMinerApplication(
     options.beeRuntimeAdapter ?? new TeamGoshBeeSdkRuntimeAdapter(),
     eventBus,
   );
-  const [walletDefinitions, diagnosticHistory] = await Promise.all([
+  const [storedWalletDefinitions, diagnosticHistory] = await Promise.all([
     storage.listWallets(),
     storage.recentDiagnostics(500),
   ]);
+  const walletDefinitions = await restoreWalletAuthorization(
+    storedWalletDefinitions, secureStorage, configuration.value?.appId ?? null,
+  );
   const rewardHistory = (
     await Promise.all(
       walletDefinitions.map((wallet) =>
@@ -291,13 +296,10 @@ export async function createMinerApplication(
     submissionGuard,
     fleetSize: () => activeMiningFleetSize(),
     automaticContinuationEnabled: true,
-    ...(configured
-      ? {
-          pacingPolicy: {
-            sessionDurationMs: configured.maximumSessionDurationMs,
-          },
-        }
-      : {}),
+    pacingPolicy: {
+      ...PRODUCTION_MINING_SESSION_POLICY,
+      ...(configured ? { sessionDurationMs: configured.maximumSessionDurationMs } : {}),
+    },
   });
   miningRuntimeRouter = new MiningRuntimeRouter({
     newRuntimeFactory,
@@ -419,7 +421,7 @@ function productionMiningNativeAdapter(
     if (bridge) return new ElectronBeeMiningNativeAdapter(bridge);
   }
   return new BeeMiningNativeAdapter(
-    new TeamGoshBee4MiningNativeSdkAccess(
+    new TeamGoshBeeMiningNativeSdkAccess(
       options.beeRuntimeAdapter ?? new TeamGoshBeeSdkRuntimeAdapter(),
       nativeSdk,
     ),

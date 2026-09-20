@@ -38,9 +38,22 @@ const MINING_KEY_APPROVAL_INTERVAL_MS = 2_000;
 const PROPAGATION_MAX_ATTEMPTS = 60;
 const PROPAGATION_INTERVAL_MS = 2_000;
 
+interface PendingMiningCredential {
+  readonly reference: string;
+  readonly appId: string;
+  readonly walletName: string;
+  readonly walletAddress: string;
+  readonly minerAddress: string;
+  readonly publicKey: string;
+  readonly secretKey: string;
+  readonly approval: 'prepared' | 'requesting' | 'approved';
+}
+
 interface StoredConnectionState {
   readonly version: 1;
   readonly status: 'awaiting-approval' | 'connected' | 'failed';
+  readonly appId: string | null;
+  readonly pendingMiningCredential: PendingMiningCredential | null;
   readonly sessionId: string;
   readonly description: string;
   readonly clientDhSecret: string;
@@ -60,6 +73,9 @@ interface StoredMiningCredential {
   readonly minerAddress: string;
   readonly publicKey: string;
   readonly secretKey: string;
+  readonly appId: string;
+  readonly verifiedAppId: string | null;
+  readonly verifiedAt: string | null;
 }
 
 type GatewayWithResources = BeeSdkGatewayContract & BeeSdkResourceOwner;
@@ -127,6 +143,7 @@ export class BeeWalletConnectionAdapter
 {
   #connect: BeeNativeConnect | null = null;
   #eventSequence = 0;
+  readonly #preparations = new Map<string, Promise<Readonly<BeePreparedMiningCredential>>>();
 
   constructor(
     private readonly gateway: GatewayWithResources,
@@ -164,6 +181,8 @@ export class BeeWalletConnectionAdapter
         const state: StoredConnectionState = Object.freeze({
           version: 1,
           status: 'awaiting-approval',
+          appId: this.configuration.appId,
+          pendingMiningCredential: null,
           sessionId: result.session_id,
           description: result.description,
           clientDhSecret: result.client_dh_secret,
@@ -293,112 +312,134 @@ export class BeeWalletConnectionAdapter
     }
   }
 
-  async prepareMiningCredential(
+  prepareMiningCredential(
     reference: BeeConnectionReference,
   ): Promise<Readonly<BeePreparedMiningCredential>> {
-    const state = await this.#loadConnection(reference);
+    const existing = this.#preparations.get(reference);
+    if (existing) return existing;
+    const operation = this.#prepareMiningCredential(reference);
+    this.#preparations.set(reference, operation);
+    void operation.then(
+      () => this.#preparations.delete(reference),
+      () => this.#preparations.delete(reference),
+    );
+    return operation;
+  }
 
-    if (
-      !state ||
-      state.status !== 'connected' ||
-      !state.sessionStateJson ||
-      !state.walletName ||
-      !state.walletAddress
-    ) {
+  async #prepareMiningCredential(
+    reference: BeeConnectionReference,
+  ): Promise<Readonly<BeePreparedMiningCredential>> {
+    let state = await this.#loadConnection(reference);
+    if (!state || state.status !== 'connected' || !state.sessionStateJson ||
+        !state.walletName || !state.walletAddress) {
       throw new Error('An approved Bee wallet connection is required.');
     }
-
-    if (
-      state.credentialReference &&
-      (await this.storage.hasSecureValue(state.credentialReference))
-    ) {
-      return Object.freeze({
-        reference,
-        credentialReference: state.credentialReference,
-        walletName: state.walletName,
-        walletAddress: state.walletAddress,
-      });
+    // A legacy connection can still verify existing keys through a read-only
+    // lookup. It must not silently issue new authorizations under another DApp.
+    if (state.appId !== this.configuration.appId) {
+      throw new Error('Connection DApp context changed. Verify existing mining keys or reconnect the wallet for the current DApp.');
+    }
+    if (state.credentialReference) {
+      const saved = await this.storage.loadSecureValue(state.credentialReference);
+      if (saved !== null) {
+        const credential = parseStoredBeeMiningCredential(saved);
+        if (credential.appId !== this.configuration.appId) {
+          throw new Error('Mining credential DApp context changed. Verify propagation before reuse.');
+        }
+        return Object.freeze({ reference, credentialReference: state.credentialReference,
+          walletName: state.walletName, walletAddress: state.walletAddress });
+      }
     }
 
-    const credentialReference = this.createReference('credential');
     await this.gateway.initialize();
-    const keys = this.gateway.ownResource(
-      await this.nativeSdk.generateMiningKeys(this.configuration.endpoints),
-    );
-
     try {
-      const minerAddress = await this.nativeSdk.resolveMinerAddress(
-        this.configuration.endpoints,
-        state.walletName,
-      );
-      const sessionUpdate = this.gateway.ownResource(
-        await this.#connectionClient().request_set_mining_keys(
-          [...this.configuration.endpoints],
-          state.sessionId,
-          state.description,
-          state.sessionStateJson,
-          this.configuration.appId,
-          keys.public,
-          MINING_KEY_APPROVAL_MAX_ATTEMPTS,
-          MINING_KEY_APPROVAL_INTERVAL_MS,
-        ),
-      );
-
-      try {
-        const credential: StoredMiningCredential = Object.freeze({
-          version: 1,
-          walletName: state.walletName,
-          walletAddress: state.walletAddress,
-          minerAddress,
-          publicKey: keys.public,
-          secretKey: keys.secret,
-        });
-        await this.storage.saveSecureValue(
-          credentialReference,
-          JSON.stringify(credential),
+      let pending = state.pendingMiningCredential;
+      if (!pending) {
+        const keys = this.gateway.ownResource(
+          await this.nativeSdk.generateMiningKeys(this.configuration.endpoints),
         );
-
         try {
-          await this.storage.saveSecureValue(
-            reference,
-            JSON.stringify({
-              ...state,
-              sessionStateJson: sessionUpdate.updated_session_state_json,
-              credentialReference,
-              failure: null,
-            } satisfies StoredConnectionState),
+          const minerAddress = await this.nativeSdk.resolveMinerAddress(
+            this.configuration.endpoints, state.walletName,
           );
-        } catch (error) {
-          await this.storage.removeSecureValue(credentialReference).catch(() => undefined);
-          throw error;
+          pending = Object.freeze({ reference: this.createReference('credential'),
+            appId: this.configuration.appId, walletName: state.walletName,
+            walletAddress: state.walletAddress, minerAddress,
+            publicKey: keys.public, secretKey: keys.secret, approval: 'prepared' as const });
+          state = { ...state, pendingMiningCredential: pending };
+          // Preserve the only private-key copy in encrypted storage BEFORE any
+          // authorization request can reach the wallet/network.
+          await this.storage.saveSecureValue(reference, JSON.stringify(state));
+        } finally {
+          this.gateway.releaseResource(keys);
         }
-
-        return Object.freeze({
-          reference,
-          credentialReference,
-          walletName: state.walletName,
-          walletAddress: state.walletAddress,
-        });
-      } finally {
-        this.gateway.releaseResource(sessionUpdate);
       }
-    } catch (error) {
-      const operationFailure = errorFailure(
-        'bee-mining-credential-preparation-failed',
-        error,
-      );
-      const failed = Object.freeze({
-        ...state,
-        status: 'connected' as const,
-        failure: operationFailure,
+      if (pending.appId !== this.configuration.appId ||
+          pending.walletAddress !== state.walletAddress || pending.walletName !== state.walletName) {
+        throw new Error('Pending mining credential identity does not match this connection.');
+      }
+
+      if (pending.approval === 'requesting') {
+        // Previous request may have reached the chain. Never blindly send a
+        // second authorization or replace the generated key after a timeout.
+        try {
+          await this.nativeSdk.ensureMiningKeysPropagated(
+            this.configuration.endpoints, pending.appId, pending.minerAddress,
+            pending.publicKey, PROPAGATION_MAX_ATTEMPTS, PROPAGATION_INTERVAL_MS,
+          );
+        } catch {
+          throw new Error('Mining-key authorization is still unconfirmed. Keep the wallet open and retry verification; the saved pending key has not been replaced.');
+        }
+        pending = { ...pending, approval: 'approved' };
+        state = { ...state, pendingMiningCredential: pending };
+        await this.storage.saveSecureValue(reference, JSON.stringify(state));
+      } else if (pending.approval === 'prepared') {
+        pending = { ...pending, approval: 'requesting' };
+        state = { ...state, pendingMiningCredential: pending };
+        await this.storage.saveSecureValue(reference, JSON.stringify(state));
+        const update = this.gateway.ownResource(
+          await this.#connectionClient().request_set_mining_keys(
+            [...this.configuration.endpoints], state.sessionId, state.description,
+            state.sessionStateJson!, this.configuration.appId, pending.publicKey,
+            MINING_KEY_APPROVAL_MAX_ATTEMPTS, MINING_KEY_APPROVAL_INTERVAL_MS,
+          ),
+        );
+        try {
+          pending = { ...pending, approval: 'approved' };
+          state = { ...state, pendingMiningCredential: pending,
+            sessionStateJson: update.updated_session_state_json };
+          await this.storage.saveSecureValue(reference, JSON.stringify(state));
+        } finally {
+          this.gateway.releaseResource(update);
+        }
+      }
+
+      const credential: StoredMiningCredential = Object.freeze({
+        version: 1, walletName: pending.walletName, walletAddress: pending.walletAddress,
+        minerAddress: pending.minerAddress, publicKey: pending.publicKey,
+        secretKey: pending.secretKey, appId: pending.appId,
+        verifiedAppId: null, verifiedAt: null,
       });
-      await this.storage
-        .saveSecureValue(reference, JSON.stringify(failed))
-        .catch(() => undefined);
-      this.#publishConnectionFailure(operationFailure, failed);
+      await this.storage.saveSecureValue(pending.reference, JSON.stringify(credential));
+      // Do not delete a key if this second write fails: the encrypted pending
+      // record remains a recoverable source of the very same authorization.
+      await this.storage.saveSecureValue(reference, JSON.stringify({
+        ...state, credentialReference: pending.reference,
+        pendingMiningCredential: null, failure: null,
+      } satisfies StoredConnectionState));
+      return Object.freeze({ reference, credentialReference: pending.reference,
+        walletName: pending.walletName, walletAddress: pending.walletAddress });
+    } catch (error) {
+      const operationFailure = errorFailure('bee-mining-credential-preparation-failed', error);
+      // Reload rather than overwrite a successfully advanced session nonce or
+      // pending key with the old pre-await snapshot.
+      const current = await this.#loadConnection(reference).catch(() => null);
+      if (current && current.sessionId === state.sessionId) {
+        const failed = { ...current, failure: operationFailure };
+        await this.storage.saveSecureValue(reference, JSON.stringify(failed)).catch(() => undefined);
+        this.#publishConnectionFailure(operationFailure, failed);
+      }
       throw error;
-    } finally {
-      this.gateway.releaseResource(keys);
     }
   }
 
@@ -435,20 +476,32 @@ export class BeeWalletConnectionAdapter
         maxAttempts,
         intervalMs,
       );
+      // A late verification must not overwrite a removed/replaced credential.
+      const current = await this.#loadConnection(reference);
+      if (!current || current.credentialReference !== credentialReference ||
+          current.sessionId !== state.sessionId ||
+          (await this.storage.loadSecureValue(credentialReference)) !== serialized) {
+        throw new Error('Mining credential changed while propagation was being verified.');
+      }
+      await this.storage.saveSecureValue(credentialReference, JSON.stringify({
+        ...JSON.parse(serialized), version: 1, appId: this.configuration.appId,
+        verifiedAppId: this.configuration.appId, verifiedAt: this.now(),
+      }));
       await this.storage.saveSecureValue(
         reference,
-        JSON.stringify({ ...state, failure: null } satisfies StoredConnectionState),
+        JSON.stringify({ ...current, failure: null } satisfies StoredConnectionState),
       );
     } catch (error) {
       const failure = errorFailure(
         'bee-mining-credential-propagation-failed',
         error,
       );
-      const failed = Object.freeze({ ...state, failure });
-      await this.storage
-        .saveSecureValue(reference, JSON.stringify(failed))
-        .catch(() => undefined);
-      this.#publishConnectionFailure(failure, failed);
+      const current = await this.#loadConnection(reference).catch(() => null);
+      if (current && current.sessionId === state.sessionId) {
+        const failed = Object.freeze({ ...current, failure });
+        await this.storage.saveSecureValue(reference, JSON.stringify(failed)).catch(() => undefined);
+        this.#publishConnectionFailure(failure, failed);
+      }
       throw error;
     }
   }
@@ -541,6 +594,8 @@ export class BeeWalletConnectionAdapter
     return {
       version: 1,
       status,
+      appId: typeof parsed.appId === 'string' ? parsed.appId : null,
+      pendingMiningCredential: parsePendingCredential(parsed.pendingMiningCredential),
       sessionId: requiredText(parsed.sessionId, 'Session ID'),
       description: requiredText(parsed.description, 'Session description'),
       clientDhSecret: requiredText(parsed.clientDhSecret, 'DH secret'),
@@ -613,6 +668,9 @@ export class BeeWalletConnectionAdapter
 }
 
 export function parseStoredBeeMiningCredential(value: string): Readonly<{
+  appId: string | null;
+  verifiedAppId: string | null;
+  verifiedAt: string | null;
   walletName: string;
   walletAddress: string;
   minerAddress: string;
@@ -626,10 +684,39 @@ export function parseStoredBeeMiningCredential(value: string): Readonly<{
   }
 
   return Object.freeze({
+    appId: typeof parsed.appId === 'string' ? parsed.appId : null,
+    verifiedAppId: typeof parsed.verifiedAppId === 'string' ? parsed.verifiedAppId : null,
+    verifiedAt: typeof parsed.verifiedAt === 'string' ? parsed.verifiedAt : null,
     walletName: requiredText(parsed.walletName, 'Wallet name'),
     walletAddress: requiredText(parsed.walletAddress, 'Wallet address'),
     minerAddress: requiredText(parsed.minerAddress, 'Miner address'),
     publicKey: requiredText(parsed.publicKey, 'Mining public key'),
     secretKey: requiredText(parsed.secretKey, 'Mining secret key'),
   });
+}
+
+function parsePendingCredential(value: unknown): PendingMiningCredential | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'object') throw new Error('Pending mining credential is invalid.');
+  const p = value as Record<string, unknown>;
+  if (p.approval !== 'prepared' && p.approval !== 'requesting' && p.approval !== 'approved') {
+    throw new Error('Pending mining authorization stage is invalid.');
+  }
+  return Object.freeze({
+    reference: requiredText(p.reference, 'Pending credential reference'),
+    appId: requiredText(p.appId, 'Pending DApp ID'),
+    walletName: requiredText(p.walletName, 'Pending wallet name'),
+    walletAddress: requiredText(p.walletAddress, 'Pending wallet address'),
+    minerAddress: requiredText(p.minerAddress, 'Pending miner address'),
+    publicKey: requiredText(p.publicKey, 'Pending public key'),
+    secretKey: requiredText(p.secretKey, 'Pending private key'),
+    approval: p.approval,
+  });
+}
+
+export function credentialVerifiedForApp(
+  credential: ReturnType<typeof parseStoredBeeMiningCredential>, appId: string,
+): boolean {
+  return credential.appId === appId && credential.verifiedAppId === appId &&
+    credential.verifiedAt !== null && Number.isFinite(Date.parse(credential.verifiedAt));
 }

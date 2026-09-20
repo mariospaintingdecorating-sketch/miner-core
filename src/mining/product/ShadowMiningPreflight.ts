@@ -36,7 +36,8 @@ export type ShadowMiningPreflightBlockerCode =
   | 'MINER_ADDRESS_INVALID'
   | 'PUBLIC_KEY_INVALID'
   | 'RUNTIME_NOT_CONSTRUCTIBLE'
-  | 'SHADOW_PREFLIGHT_ERROR';
+  | 'SHADOW_PREFLIGHT_ERROR'
+  | 'AUTHORIZATION_CONTEXT_UNVERIFIED';
 
 export interface ShadowMiningPreflightBlocker {
   readonly code: ShadowMiningPreflightBlockerCode;
@@ -186,6 +187,9 @@ function mappedFailure(error: MiningIdentityPreparationError): Readonly<{
     PUBLIC_KEY_INVALID: [
       'BLOCKED', 'PUBLIC_KEY_INVALID', 'minerAddressValid',
     ],
+    MINING_AUTHORIZATION_CONTEXT_UNVERIFIED: [
+      'BLOCKED', 'AUTHORIZATION_CONTEXT_UNVERIFIED', 'publicKeyValid',
+    ],
   };
   const [status, blockerCode, through] = mapping[error.code];
   return Object.freeze({
@@ -295,6 +299,9 @@ function blocker(
     PUBLIC_KEY_INVALID: ['publicKeyValid', 'Mining public key is invalid.'],
     RUNTIME_NOT_CONSTRUCTIBLE: [
       'newRuntimeConstructible', 'New runtime dependencies are not constructible.',
+    ],
+    AUTHORIZATION_CONTEXT_UNVERIFIED: [
+      'keyBindingVerified', 'Verify mining-key propagation for the current DApp before mining.',
     ],
     SHADOW_PREFLIGHT_ERROR: [
       'newRuntimeConstructible', 'Shadow preflight could not be completed.',

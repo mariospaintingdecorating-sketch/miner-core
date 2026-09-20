@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 
 describe('production mining-engine isolation', () => {
-  it('composes only WalletMiningWorker and the official Bee 4 native adapter', () => {
+  it('composes only WalletMiningWorker and the official Bee SDK native adapter', () => {
     const source = compositionSource();
 
     expect(source).toContain('new WalletMiningRuntimeFactory');

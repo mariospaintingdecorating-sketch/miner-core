@@ -1,6 +1,6 @@
 import type { RuntimePreflight } from '../../application/RuntimePreflight';
 import type { ProductionConfigurationResolution } from '../../application/productionConfiguration';
-import { parseStoredBeeMiningCredential } from '../../services/bee/BeeWalletConnectionAdapter';
+import { credentialVerifiedForApp, parseStoredBeeMiningCredential } from '../../services/bee/BeeWalletConnectionAdapter';
 import type { WalletRegistryContract } from '../../shared/wallets';
 import type { SecureReferenceStorageContract } from '../../storage/contracts';
 import type { ValidatedMiningIdentity } from '../WalletMiningRuntime';
@@ -19,7 +19,8 @@ export type MiningIdentityPreparationFailureCode =
   | 'SECURE_CREDENTIAL_INVALID'
   | 'WALLET_IDENTITY_MISMATCH'
   | 'MINER_ADDRESS_INVALID'
-  | 'PUBLIC_KEY_INVALID';
+  | 'PUBLIC_KEY_INVALID'
+  | 'MINING_AUTHORIZATION_CONTEXT_UNVERIFIED';
 
 export class MiningIdentityPreparationError extends Error {
   constructor(
@@ -105,6 +106,15 @@ export class ProductMiningIdentityAdapter implements MiningIdentitySource {
     }
     if (!validMiningPublicKey(credential.publicKey)) {
       throw new MiningIdentityPreparationError('PUBLIC_KEY_INVALID');
+    }
+
+    if (!credentialVerifiedForApp(credential, configuration.appId)) {
+      throw new MiningIdentityPreparationError('MINING_AUTHORIZATION_CONTEXT_UNVERIFIED');
+    }
+    const current = this.walletRegistry.wallet(normalizedWalletId);
+    if (!current || current.miningCredentialReference !== wallet.miningCredentialReference ||
+        current.walletAddress !== wallet.walletAddress || current.onboardingStatus !== 'ready') {
+      throw new MiningIdentityPreparationError('WALLET_IDENTITY_MISMATCH');
     }
 
     return immutableValidatedMiningIdentity({

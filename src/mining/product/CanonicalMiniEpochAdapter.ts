@@ -20,6 +20,9 @@ export class ProductCanonicalMiniEpochAdapter
     return Object.freeze({
       miniEpoch: canonical.miniEpoch.id,
       remainingMs: canonical.miniEpoch.remainingMs,
+      ...('updatedAt' in canonical ? {
+        observedAtMs: canonical.updatedAt === null ? null : Date.parse(canonical.updatedAt),
+      } : {}),
     });
   }
 

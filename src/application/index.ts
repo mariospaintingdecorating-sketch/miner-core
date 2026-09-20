@@ -100,3 +100,5 @@ export type {
   WalletSessionResult,
   WalletStopReason,
 } from './runtimeAnalytics';
+
+export { CORE_MINER_VERSION, CORE_MINER_SDK_VERSION } from '../shared/releaseIdentity';

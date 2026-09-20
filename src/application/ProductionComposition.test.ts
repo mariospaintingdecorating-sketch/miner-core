@@ -3,8 +3,8 @@ import { readFileSync } from 'node:fs';
 import packageJson from '../../package.json';
 
 describe('production composition', () => {
-  it('pins the native protocol boundary to Bee SDK 4.0.0', () => {
-    expect(packageJson.dependencies['@teamgosh/bee-sdk']).toBe('4.0.0');
+  it('pins the native protocol boundary to Bee SDK 5.1.1', () => {
+    expect(packageJson.dependencies['@teamgosh/bee-sdk']).toBe('5.1.1');
   });
 
   it('routes every start source into the same wallet-local router', () => {

@@ -1,3 +1,4 @@
+import { CORE_MINER_VERSION } from '../../application';
 import { useEffect, useState } from 'react';
 import logoUrl from '../../../assets/logo/msii-logo-ui.png';
 
@@ -36,7 +37,7 @@ export function CustomTitleBar({ controls: providedControls }: CustomTitleBarPro
     <header className="custom-title-bar" data-testid="custom-title-bar">
       <div className="title-bar-identity">
         <img src={logoUrl} alt="" aria-hidden="true" width="20" height="20" />
-        <strong>Core Miner</strong>
+        <strong>Core Miner {CORE_MINER_VERSION}</strong>
       </div>
       <div className="window-controls" aria-label="Window controls">
         <button

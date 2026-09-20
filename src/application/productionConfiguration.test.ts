@@ -44,7 +44,7 @@ describe('production configuration', () => {
       code: 'production-configuration-missing',
       endpointCount: 0,
       appIdConfigured: false,
-      maximumSessionDurationMs: 135_000,
+      maximumSessionDurationMs: 126_000,
     });
   });
 
@@ -63,14 +63,14 @@ describe('production configuration', () => {
       mamaBoardEndpoint: 'https://node-a.example',
       appId: 'operator-app-id',
       apiUrl: 'https://api.example',
-      maximumSessionDurationMs: 135_000,
+      maximumSessionDurationMs: 126_000,
     });
     expect(resolution.snapshot).toEqual({
       status: 'ready',
       code: 'production-configuration-ready',
       endpointCount: 2,
       appIdConfigured: true,
-      maximumSessionDurationMs: 135_000,
+      maximumSessionDurationMs: 126_000,
     });
     expect(JSON.stringify(resolution.snapshot)).not.toContain(
       'https://node-a.example',
@@ -93,14 +93,14 @@ describe('production configuration', () => {
       mamaBoardEndpoint: 'https://legacy-a.example',
       appId: 'legacy-app-id',
       apiUrl: 'https://legacy-api.example',
-      maximumSessionDurationMs: 135_000,
+      maximumSessionDurationMs: 126_000,
     });
     expect(resolution.snapshot).toEqual({
       status: 'ready',
       code: 'production-configuration-ready',
       endpointCount: 2,
       appIdConfigured: true,
-      maximumSessionDurationMs: 135_000,
+      maximumSessionDurationMs: 126_000,
     });
   });
 
@@ -120,7 +120,7 @@ describe('production configuration', () => {
       mamaBoardEndpoint: 'https://new.example',
       appId: 'new-app-id',
       apiUrl: 'https://new-api.example',
-      maximumSessionDurationMs: 135_000,
+      maximumSessionDurationMs: 126_000,
     });
   });
 
@@ -136,7 +136,7 @@ describe('production configuration', () => {
       mamaBoardEndpoint: 'https://node.example',
       appId: 'operator-app-id',
       apiUrl: 'https://app-backend.ackinacki.org/api',
-      maximumSessionDurationMs: 135_000,
+      maximumSessionDurationMs: 126_000,
     });
   });
 

@@ -126,6 +126,7 @@ export interface MiningNativeAdapter {
 }
 
 export interface CanonicalMiniEpochSnapshot {
+  readonly observedAtMs?: number | null;
   readonly miniEpoch: string | null;
   readonly remainingMs: number | null;
 }
@@ -241,6 +242,8 @@ export class MiningNativeAdapterError extends Error {
 }
 
 export interface WalletMiningSnapshot {
+  readonly configuredTapIntervalMs?: number;
+  readonly configuredTargetTaps?: number;
   readonly walletId: string;
   readonly state: WalletMiningWorkerState;
   readonly sessionId: string | null;
@@ -358,6 +361,9 @@ export interface WalletMiningRuntime {
 }
 
 export interface WalletMiningWorkerOptions {
+  readonly firstTapDelayMs: number;
+  readonly minimumStartWindowMs: number;
+  readonly requireFreshClock: boolean;
   readonly targetTaps: number;
   readonly sessionDurationMs: number;
   readonly epochEndSafetyMarginMs: number;
@@ -373,6 +379,11 @@ export interface WalletMiningWorkerOptions {
 
 export const DEFAULT_WALLET_MINING_WORKER_OPTIONS: Readonly<WalletMiningWorkerOptions> =
   Object.freeze({
+    // Generic worker defaults retain compatibility with existing embedders.
+    // The desktop production composition supplies MiningSessionPolicy.
+    firstTapDelayMs: 0,
+    minimumStartWindowMs: 0,
+    requireFreshClock: false,
     targetTaps: 70,
     sessionDurationMs: 135_000,
     epochEndSafetyMarginMs: 35_000,

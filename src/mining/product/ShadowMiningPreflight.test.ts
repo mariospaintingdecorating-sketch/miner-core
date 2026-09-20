@@ -72,6 +72,9 @@ function credential(
 ): string {
   return JSON.stringify({
     version: 1,
+    appId: 'synthetic-shadow-app-id',
+    verifiedAppId: 'synthetic-shadow-app-id',
+    verifiedAt: '2026-09-20T00:00:00.000Z',
     walletName: `Wallet ${WALLET_ID}`,
     walletAddress: WALLET_ADDRESS,
     minerAddress: MINER_ADDRESS,

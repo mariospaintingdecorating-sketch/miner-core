@@ -1,3 +1,4 @@
+import { CORE_MINER_VERSION, CORE_MINER_SDK_VERSION } from '../../application';
 import type { ReactNode } from 'react';
 import type {
   MainEpochStartSnapshot,
@@ -135,7 +136,7 @@ export function DesktopLayout({
           <div className="mobile-brand"><BrandLogo compact /></div>
           <div className="workspace-title">
             <h1>Core Miner</h1>
-            <p>{t(navigationLabel(activeView))} · {t('Operator console')}</p>
+            <p>{t(navigationLabel(activeView))} · {CORE_MINER_VERSION} · Bee SDK {CORE_MINER_SDK_VERSION}</p>
           </div>
           <div className="header-runtime" aria-label={t('Current miner status')}>
             <span>{t('Runtime status')}</span>

@@ -372,7 +372,9 @@ describe('BeeWalletConnectionAdapter', () => {
     await expect(
       adapter.prepareMiningCredential('connection-ref'),
     ).resolves.toMatchObject({ credentialReference: 'credential-ref' });
-    expect(connect.request_set_mining_keys).toHaveBeenCalledTimes(2);
+    expect(connect.request_set_mining_keys).toHaveBeenCalledTimes(1);
+    expect(nativeSdk.generateMiningKeys).toHaveBeenCalledTimes(1);
+    expect(nativeSdk.ensureMiningKeysPropagated).toHaveBeenCalledTimes(1);
     await gateway.dispose();
   });
 
@@ -422,5 +424,121 @@ describe('BeeWalletConnectionAdapter', () => {
       failure: null,
     });
     await gateway.dispose();
+  });
+});
+
+describe('DApp migration and recoverable mining-key authorization', () => {
+  function currentAdapter(f: ReturnType<typeof fixture>, appId = 'app-id') {
+    return new BeeWalletConnectionAdapter(f.gateway, f.storage,
+      { endpoints: ['https://node.example'], appId }, f.nativeSdk, f.eventBus,
+      references(), () => '2026-09-20T12:00:00.000Z');
+  }
+  async function connected() {
+    const f = fixture(); const adapter = currentAdapter(f);
+    await adapter.beginConnection(); await adapter.awaitConnection('connection-ref');
+    return { ...f, adapter };
+  }
+  it('saves the pending key before the authorization request, without reporting it as verified', async () => {
+    const f = await connected();
+    vi.mocked(f.connect.request_set_mining_keys).mockImplementationOnce(async () => {
+      const state = JSON.parse(f.storage.values.get('connection-ref')!);
+      expect(state.pendingMiningCredential).toMatchObject({ secretKey: 'mining-secret',
+        appId: 'app-id', approval: 'requesting' });
+      expect(state.credentialReference).toBeNull();
+      return resource({ updated_session_state_json: 'approved-session' });
+    });
+    await f.adapter.prepareMiningCredential('connection-ref');
+    expect(JSON.parse(f.storage.values.get('credential-ref')!)).toMatchObject({
+      appId: 'app-id', verifiedAppId: null, verifiedAt: null,
+    });
+    await f.adapter.verifyMiningCredentialPropagation('connection-ref', 'credential-ref');
+    expect(JSON.parse(f.storage.values.get('credential-ref')!)).toMatchObject({
+      verifiedAppId: 'app-id', verifiedAt: '2026-09-20T12:00:00.000Z', secretKey: 'mining-secret',
+    });
+  });
+  it('does not mark a rejected propagation check as verified', async () => {
+    const f = await connected(); await f.adapter.prepareMiningCredential('connection-ref');
+    vi.mocked(f.nativeSdk.ensureMiningKeysPropagated).mockRejectedValueOnce(new Error('Owner mismatch'));
+    await expect(f.adapter.verifyMiningCredentialPropagation('connection-ref', 'credential-ref')).rejects.toThrow('Owner mismatch');
+    expect(JSON.parse(f.storage.values.get('credential-ref')!).verifiedAppId).toBeNull();
+  });
+  it('does not regenerate keys or resend authorization after an ambiguous failure', async () => {
+    const f = await connected();
+    vi.mocked(f.connect.request_set_mining_keys).mockRejectedValueOnce(new Error('Connection lost after send'));
+    await expect(f.adapter.prepareMiningCredential('connection-ref')).rejects.toThrow();
+    vi.mocked(f.nativeSdk.ensureMiningKeysPropagated).mockRejectedValueOnce(new Error('Not yet on chain'));
+    await expect(f.adapter.prepareMiningCredential('connection-ref')).rejects.toThrow('still unconfirmed');
+    expect(f.connect.request_set_mining_keys).toHaveBeenCalledOnce();
+    expect(f.nativeSdk.generateMiningKeys).toHaveBeenCalledOnce();
+    expect(JSON.parse(f.storage.values.get('connection-ref')!).pendingMiningCredential.secretKey).toBe('mining-secret');
+  });
+  it('recovers the same pending key after an application-adapter restart using a read-only check', async () => {
+    const f = await connected();
+    vi.mocked(f.connect.request_set_mining_keys).mockRejectedValueOnce(new Error('timeout'));
+    await expect(f.adapter.prepareMiningCredential('connection-ref')).rejects.toThrow();
+    const restored = currentAdapter(f);
+    await expect(restored.prepareMiningCredential('connection-ref')).resolves.toMatchObject({ credentialReference: 'credential-ref' });
+    expect(f.nativeSdk.generateMiningKeys).toHaveBeenCalledOnce();
+    expect(f.connect.request_set_mining_keys).toHaveBeenCalledOnce();
+    expect(f.nativeSdk.ensureMiningKeysPropagated).toHaveBeenCalledOnce();
+  });
+  it('does not submit an authorization if secure pending-key persistence fails', async () => {
+    const f = await connected();
+    const save = f.storage.saveSecureValue.bind(f.storage);
+    vi.spyOn(f.storage, 'saveSecureValue').mockImplementation(async (ref, raw) => {
+      if (JSON.parse(raw).pendingMiningCredential) throw new Error('Disk full');
+      return save(ref, raw);
+    });
+    await expect(f.adapter.prepareMiningCredential('connection-ref')).rejects.toThrow('Disk full');
+    expect(f.connect.request_set_mining_keys).not.toHaveBeenCalled();
+  });
+  it('preserves an approved pending key if the final connection commit fails', async () => {
+    const f = await connected(); const save = f.storage.saveSecureValue.bind(f.storage);
+    let rejectCommit = true;
+    vi.spyOn(f.storage, 'saveSecureValue').mockImplementation(async (ref, raw) => {
+      const p = JSON.parse(raw);
+      if (rejectCommit && ref === 'connection-ref' && p.credentialReference) throw new Error('commit failed');
+      return save(ref, raw);
+    });
+    await expect(f.adapter.prepareMiningCredential('connection-ref')).rejects.toThrow('commit failed');
+    expect(JSON.parse(f.storage.values.get('connection-ref')!).pendingMiningCredential.approval).toBe('approved');
+    expect(f.storage.values.has('credential-ref')).toBe(true);
+    rejectCommit = false; await f.adapter.prepareMiningCredential('connection-ref');
+    expect(f.connect.request_set_mining_keys).toHaveBeenCalledOnce();
+    expect(f.nativeSdk.generateMiningKeys).toHaveBeenCalledOnce();
+  });
+  it('does not use a connection issued for another DApp to authorize new mining keys', async () => {
+    const f = await connected(); const migrated = currentAdapter(f, 'new-app-id');
+    await expect(migrated.prepareMiningCredential('connection-ref')).rejects.toThrow('DApp context changed');
+    expect(f.connect.request_set_mining_keys).not.toHaveBeenCalled();
+    expect(f.nativeSdk.generateMiningKeys).not.toHaveBeenCalled();
+  });
+  it('can verify an existing legacy key for the new DApp without changing its secret', async () => {
+    const f = await connected(); await f.adapter.prepareMiningCredential('connection-ref');
+    const p = JSON.parse(f.storage.values.get('credential-ref')!);
+    delete p.appId; delete p.verifiedAppId; delete p.verifiedAt;
+    f.storage.values.set('credential-ref', JSON.stringify(p));
+    const migrated = currentAdapter(f, 'new-app-id');
+    await migrated.verifyMiningCredentialPropagation('connection-ref', 'credential-ref');
+    expect(JSON.parse(f.storage.values.get('credential-ref')!)).toMatchObject({
+      appId: 'new-app-id', verifiedAppId: 'new-app-id', secretKey: 'mining-secret',
+    });
+    expect(f.nativeSdk.ensureMiningKeysPropagated).toHaveBeenLastCalledWith(
+      ['https://node.example'], 'new-app-id', '0:miner-address', 'mining-public', 60, 2000);
+    expect(f.connect.request_set_mining_keys).toHaveBeenCalledOnce();
+  });
+  it('does not restore deleted records when a late verification completes', async () => {
+    const f = await connected(); await f.adapter.prepareMiningCredential('connection-ref');
+    vi.mocked(f.nativeSdk.ensureMiningKeysPropagated).mockImplementationOnce(async () => {
+      f.storage.values.delete('credential-ref'); f.storage.values.delete('connection-ref');
+    });
+    await expect(f.adapter.verifyMiningCredentialPropagation('connection-ref', 'credential-ref')).rejects.toThrow('changed');
+    expect(f.storage.values.size).toBe(0);
+  });
+  it('deduplicates concurrent preparation of one connection', async () => {
+    const f = await connected(); const a = f.adapter.prepareMiningCredential('connection-ref');
+    const b = f.adapter.prepareMiningCredential('connection-ref'); expect(a).toBe(b);
+    await Promise.all([a, b]); expect(f.nativeSdk.generateMiningKeys).toHaveBeenCalledOnce();
+    expect(f.connect.request_set_mining_keys).toHaveBeenCalledOnce();
   });
 });
